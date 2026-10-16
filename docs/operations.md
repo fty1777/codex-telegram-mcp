@@ -24,15 +24,16 @@ one terminal may leave the connection running.
 
 ## Updates
 
-From the checkout, run:
+For a marketplace installation, run:
 
 ```sh
-bun install --frozen-lockfile
-bun run bridge install
+codex plugin marketplace upgrade codex-telegram
+codex plugin add telegram@codex-telegram
 ```
 
 Existing bots and pairing are retained. A brief reconnection can occur during an
-update. Keep Bun available at its installed location.
+update. Keep `bun` on your PATH. If new tools do not appear, finish the current
+task, then reload the conversation.
 
 ## Remove a bot or the plugin
 
@@ -42,6 +43,11 @@ affect other configured bots.
 
 Removing the plugin disconnects all bots while retaining their settings for later
 reinstallation. Your Codex conversations and projects are preserved.
+
+```sh
+codex plugin remove telegram@codex-telegram
+codex plugin marketplace remove codex-telegram
+```
 
 ## Terminal commands
 
@@ -55,12 +61,13 @@ bun run bridge resume --instance default
 bun run bridge unbind default
 bun run bridge uninstall default --keep-config
 bun run bridge uninstall default
-bun run bridge uninstall-plugin
 ```
 
 `unbind` keeps the bot paired so it can be connected to another conversation.
 `uninstall --keep-config` keeps its settings and history in a paused state.
 For full removal, uninstall each bot before uninstalling the plugin.
+The checkout command `bun run bridge uninstall-plugin` removes only the older
+checkout-based installation; use `codex plugin remove` for the marketplace plugin.
 
 ## Notifications
 

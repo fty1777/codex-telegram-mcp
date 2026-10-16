@@ -1,6 +1,6 @@
 import { parseArgs } from "node:util";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { Store, atomic } from "./state";
 import { AppServer } from "./appserver";
 import { Sender } from "./telegram";
@@ -29,6 +29,7 @@ export async function main(argv = process.argv.slice(2)) {
     allowPositionals: true,
     options: {
       "data-dir": { type: "string" },
+      "plugin-root": { type: "string" },
       endpoint: { type: "string" },
       instance: { type: "string" },
       "parent-pid": { type: "string" },
@@ -52,6 +53,14 @@ export async function main(argv = process.argv.slice(2)) {
     s = new Store(v["data-dir"]);
   let result: any;
   switch (command) {
+    case "plugin": {
+      if (!v["plugin-root"]) throw Error("--plugin-root is required");
+      const root = resolve(v["plugin-root"]);
+      const manifest = JSON.parse(readFileSync(join(root, ".codex-plugin/plugin.json"), "utf8"));
+      if (manifest.name !== "telegram") throw Error("Unexpected Telegram plugin identity");
+      await channel(s, { id: "telegram@codex-telegram", root });
+      return;
+    }
     case "channel":
       await channel(s);
       return;

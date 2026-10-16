@@ -19,17 +19,15 @@ and [file upload limits](https://core.telegram.org/bots/api#sending-files).
 
 ## Get started
 
-You need Linux, [Bun](https://bun.sh), Codex installed and signed in, and a Telegram
+You need Linux, [Bun](https://bun.sh) on your PATH, Codex CLI with plugin support
+installed and signed in, and a Telegram
 bot token from [@BotFather](https://t.me/BotFather) (`/newbot`).
 
-Ask Codex to install this repository and connect your bot, or install it locally:
+Install the plugin:
 
 ```sh
-git clone https://github.com/fty1777/codex-telegram-mcp.git
-cd codex-telegram-mcp
-bun install --frozen-lockfile
-bun run bridge doctor
-bun run bridge install
+codex plugin marketplace add fty1777/codex-telegram-mcp
+codex plugin add telegram@codex-telegram
 ```
 
 Then, in the Codex conversation you want to use:
@@ -74,3 +72,13 @@ Thank you to [ssamssae/codex-telegram-bridge](https://github.com/ssamssae/codex-
 the starting point for this project, and to the
 [Claude Code Telegram channel](https://github.com/anthropics/claude-plugins-official/tree/main/external_plugins/telegram),
 from which we ported and adapted many features.
+
+## License and disclaimer
+
+Licensed under [Apache-2.0](LICENSE), with upstream notices in [NOTICE](NOTICE).
+
+This is an independent community project, not affiliated with or endorsed by
+OpenAI, Anthropic, or Telegram. It is provided as is, without warranty, under the
+terms of the license. Messages and files pass through Telegram and your configured
+Codex/model services. You are responsible for protecting your bot token and
+deciding what to share and which actions to authorize.

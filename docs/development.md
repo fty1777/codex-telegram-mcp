@@ -14,6 +14,42 @@ The runtime requires Linux for its process ownership safeguards. Installed plugi
 use bundled JavaScript and the existing Bun executable. They do not require the
 checkout or `node_modules` after installation.
 
+## Marketplace package
+
+The catalog is `.agents/plugins/marketplace.json`; the stable selector is
+`telegram@codex-telegram`. Its package lives in `plugins/telegram/` and uses the
+Codex compatibility manifest and `${PLUGIN_ROOT}` paths. The `plugin` CLI entry
+starts the shared channel with the installed package's identity. It does not
+require or overwrite the legacy installer's `manager-installation.json` receipt.
+Pairing and explicit binding attach a bot to this installation. Startup refreshes
+cached paths only for bots already assigned to this plugin.
+
+Rebuild the committed bundle after runtime changes:
+
+```sh
+bun install --frozen-lockfile
+bun run build:plugin
+bun run typecheck
+bun test tests-bun
+bun scripts/probe-marketplace.ts
+```
+
+The build copies license notices and gathers licenses for bundled dependencies.
+Commit the generated `plugins/telegram/` files with their source changes. Keep
+`package.json` and the generated plugin version in sync; bump the version for a
+release. Publish only the intended branch and release files, never local archive
+branches or private runtime state.
+
+The marketplace probe copies only the distributable package into a temporary
+catalog, installs it with an isolated `CODEX_HOME`, loads its MCP tools, and checks
+that removal closes the host. It creates no Codex sessions and makes no Telegram
+requests. Pairing, receiver readiness, and real round-trip delivery need separate
+checks; package installation alone does not establish them.
+
+For source-checkout development, the existing `bun run bridge install` installer
+remains available. Remove that installation before migrating to the marketplace
+plugin, as described in [setup](setup.md#an-existing-telegram-integration).
+
 ## Code map
 
 | Module | Responsibility |

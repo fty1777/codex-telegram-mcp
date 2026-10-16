@@ -8,6 +8,9 @@ Use Linux with Bun and a signed-in Codex installation. Create a bot with
 [@BotFather](https://t.me/BotFather), then follow the [setup steps](../README.md#get-started).
 Keep the bot token private.
 
+The marketplace plugin includes its runtime; you do not need a checkout or a
+separate dependency installation. Bun must be available to Codex as `bun`.
+
 In the Codex conversation you want to use, ask Codex to connect the bot. Send
 `/start` privately to the bot, then paste its pairing code back into Codex.
 The code expires after 15 minutes. Finish by sending a short Telegram message
@@ -40,6 +43,12 @@ bot stays paused unless you ask to activate it.
 
 If the same bot is used by another service, stop that service before connecting it
 here. Ask Codex to check the setup if it reports that the bot is already in use.
+
+If you previously installed this project using `bun run bridge install`, finish
+the current task, then run `bun run bridge uninstall-plugin` from that checkout
+before switching to the marketplace installation. Bot settings and pairing are
+retained. After loading the marketplace tools, ask Codex to inspect your bots and
+bind the existing bot to the intended conversation. No new bot or pairing is needed.
 
 For terminal commands and troubleshooting details, see the
 [developer reference](development.md#setup-and-recovery-reference).

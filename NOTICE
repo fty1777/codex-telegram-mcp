@@ -1,0 +1,18 @@
+Codex Telegram MCP
+Copyright 2026 fty1777 and contributors
+
+This project started from ssamssae/codex-telegram-bridge:
+https://github.com/ssamssae/codex-telegram-bridge
+Copyright (c) 2026 Codex Telegram Bridge contributors
+Licensed under the MIT License; the original license is reproduced in
+licenses/codex-telegram-bridge-MIT.txt. That license continues to apply to
+material from that project.
+
+Features were ported and adapted from the Claude Code Telegram channel:
+https://github.com/anthropics/claude-plugins-official/tree/main/external_plugins/telegram
+Copyright 2026 Anthropic, PBC
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+The adapted implementation has been modified for Codex session integration,
+local state management, message delivery, and formatting.
+
+Third-party dependencies retain their respective licenses.

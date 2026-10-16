@@ -1,0 +1,12 @@
+{
+  "name": "codex-telegram",
+  "interface": { "displayName": "Codex Telegram" },
+  "plugins": [
+    {
+      "name": "telegram",
+      "source": { "source": "local", "path": "./plugins/telegram" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Productivity"
+    }
+  ]
+}

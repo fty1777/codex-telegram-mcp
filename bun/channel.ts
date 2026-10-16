@@ -9,6 +9,7 @@ import { callingSession } from "./management";
 import { runWorker, pluginEnabled, healthyReceiverHandoff } from "./worker";
 import { diagnostic } from "./engine";
 import { Sender } from "./telegram";
+import { lock } from "./process";
 
 /** One Codex-owned MCP host per session, with independently owned bot workers. */
 export class ChannelHost {
@@ -18,6 +19,7 @@ export class ChannelHost {
   constructor(
     readonly store: Store,
     private run = runWorker,
+    private plugin?: SharedPlugin,
   ) {}
   private authorized(name: string, meta: unknown) {
     if (this.closed) throw Error("Channel is closing");
@@ -29,6 +31,8 @@ export class ChannelHost {
       callingSession(meta) !== c.thread_id
     )
       throw Error("This bot is not bound to the calling session");
+    if (this.plugin && c.plugin?.id !== this.plugin.id)
+      throw Error("This bot uses another installation; bind it through this plugin first");
     return c;
   }
   async connect(name: string, meta: unknown) {
@@ -122,30 +126,50 @@ export class ChannelHost {
   }
 }
 
-export function attachSharedPlugin(store: Store, name: string) {
-  const installed = readJSON(join(store.root, "manager-installation.json"));
+export type SharedPlugin = { id: string; root: string };
+
+export function attachSharedPlugin(
+  store: Store,
+  name: string,
+  plugin?: SharedPlugin,
+  activate = true,
+) {
+  const installed = plugin
+    ? { phase: "installed", plugin_id: plugin.id, installed_path: plugin.root, mcp_server: "telegram" }
+    : readJSON(join(store.root, "manager-installation.json"));
   if (installed.phase !== "installed")
     throw Error("Install the Telegram plugin first");
-  const config = {
-    ...store.read(name),
-    lifecycle: "mcp",
-    shared_mcp: true,
-    mcp_server: installed.mcp_server ?? "telegram",
-    autostart: true,
-    plugin: { id: installed.plugin_id, root: installed.installed_path },
-  };
-  atomic(join(store.instance(name), "config.json"), config);
-  return config;
+  const release = lock(join(store.instance(name), "management.lock"));
+  try {
+    const current = store.read(name);
+    if (current.removing || current.binding_change)
+      throw Error("Bot binding is changing; inspect list_bots before retrying");
+    const config = {
+      ...current,
+      lifecycle: "mcp",
+      shared_mcp: true,
+      mcp_server: installed.mcp_server ?? "telegram",
+      autostart: activate ? true : current.autostart,
+      plugin: { id: installed.plugin_id, root: installed.installed_path },
+    };
+    atomic(join(store.instance(name), "config.json"), config);
+    return config;
+  } finally {
+    release();
+  }
 }
 
-export function channelServer(store: Store, host = new ChannelHost(store)) {
+export function channelServer(store: Store, providedHost?: ChannelHost, plugin?: SharedPlugin) {
+  const host = providedHost ?? new ChannelHost(store, runWorker, plugin);
   const server = managementServer(store, {
     install: async (_s, name) => {
-      const config = attachSharedPlugin(store, name);
+      const config = attachSharedPlugin(store, name, plugin);
       return host.connect(name, { threadId: config.thread_id });
     },
-    start: async (_s, name) =>
-      host.connect(name, { threadId: store.read(name).thread_id }),
+    start: async (_s, name) => {
+      if (plugin) attachSharedPlugin(store, name, plugin, false);
+      return host.connect(name, { threadId: store.read(name).thread_id });
+    },
     uninstall: async (_s, name) => {
       await host.forget(name);
       rmSync(store.instance(name), { recursive: true });
@@ -252,8 +276,8 @@ export function channelServer(store: Store, host = new ChannelHost(store)) {
   );
   return { server, host };
 }
-export async function channel(store: Store) {
-  const { server, host } = channelServer(store);
+export async function channel(store: Store, plugin?: SharedPlugin) {
+  const { server, host } = channelServer(store, undefined, plugin);
   let closing = false;
   const close = async () => {
     if (closing) return;
@@ -265,7 +289,9 @@ export async function channel(store: Store) {
   let failures = 0;
   const lease = setInterval(() => {
     try {
-      const receipt = readJSON(join(store.root, "manager-installation.json"));
+      const receipt = plugin
+        ? { phase: "installed", plugin_id: plugin.id, installed_path: plugin.root }
+        : readJSON(join(store.root, "manager-installation.json"));
       if (receipt.phase !== "installed") return;
       if (
         !pluginEnabled({
@@ -291,10 +317,19 @@ export async function channel(store: Store) {
   server.server.oninitialized = () => {
     for (const c of store
       .list()
-      .filter((c) => c.shared_mcp && c.thread_id && c.enabled && c.autostart))
+      .filter((c) => c.shared_mcp && c.thread_id && c.enabled && c.autostart && (!plugin || c.plugin?.id === plugin.id))) {
+      // Marketplace updates move the installed files; retain pairing and session
+      // ownership while updating only this plugin's cached location.
+      try {
+        if (plugin) attachSharedPlugin(store, c.name, plugin, false);
+      } catch (error) {
+        console.error("Connection pending:", diagnostic(String(error)));
+        continue;
+      }
       void controlMcp(c, "connect").catch((e) =>
         console.error("Connection pending:", String(e)),
       );
+    }
   };
   await server.connect(new StdioServerTransport());
 }
