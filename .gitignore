@@ -1,0 +1,9 @@
+node_modules/
+dist/
+build/
+.env
+.env.*
+*.log
+*.sqlite3
+*.sqlite3-*
+credential.json

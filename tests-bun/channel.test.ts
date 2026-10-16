@@ -1,0 +1,230 @@
+import { test, expect } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Store, atomic } from "../bun/state";
+import { ChannelHost } from "../bun/channel";
+
+test("one session host owns multiple bots independently and rejects foreign sessions", async () => {
+  const root = mkdtempSync(join(tmpdir(), "bridge-channel-")),
+    s = new Store(root);
+  for (const [i, name] of ["one", "two"].entries()) {
+    s.configure(
+      name,
+      `${123456 + i}:fixture`,
+      { id: 123456 + i, username: name },
+      42,
+      "session",
+    );
+    atomic(join(s.instance(name), "config.json"), {
+      ...s.read(name),
+      autostart: true,
+    });
+  }
+  const active = new Set<string>();
+  const host = new ChannelHost(s, async (_s, name, signal) => {
+    if (signal?.aborted) return;
+    active.add(name);
+    await new Promise<void>((resolve) =>
+      signal!.addEventListener("abort", () => resolve(), { once: true }),
+    );
+    active.delete(name);
+  });
+  try {
+    await host.connect("one", { threadId: "session" });
+    await host.connect("two", { threadId: "session" });
+    expect([...active].sort()).toEqual(["one", "two"]);
+    await expect(host.connect("one", { threadId: "other" })).rejects.toThrow(
+      "not bound",
+    );
+    await host.disconnect("one", { threadId: "session" });
+    expect([...active]).toEqual(["two"]);
+    expect((await host.connect("one", { threadId: "session" })).status).toBe(
+      "paused",
+    );
+    atomic(join(s.instance("one"), "config.json"), {
+      ...s.read("one"),
+      thread_id: "new",
+      autostart: true,
+    });
+    await host.connect("one", { threadId: "new" });
+    expect(() => host.sender("one", { threadId: "session" })).toThrow(
+      "not bound",
+    );
+    await host.forget("one");
+    expect([...active]).toEqual(["two"]);
+    await host.close();
+    expect(active.size).toBe(0);
+  } finally {
+    await host.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("native tools render progress, literal edits and captions through the common sender", async () => {
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { InMemoryTransport } = await import(
+    "@modelcontextprotocol/sdk/inMemory.js"
+  );
+  const { channelServer } = await import("../bun/channel");
+  const { writeFileSync } = await import("node:fs");
+  const root = mkdtempSync(join(tmpdir(), "telegram-tools-format-"));
+  const store = new Store(root);
+  store.configure(
+    "sample",
+    "123456:fixture",
+    { id: 123456, username: "sample" },
+    42,
+    "session",
+  );
+  const host = new ChannelHost(store);
+  const sender = host.sender("sample", { threadId: "session" });
+  const calls: any[] = [];
+  sender.api.call = async (method, params) => {
+    calls.push({ method, params });
+    return { message_id: calls.length, chat: { id: 42 } };
+  };
+  const { server } = channelServer(store, host);
+  const client = new Client({ name: "format-test", version: "1" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  try {
+    await server.connect(b);
+    await client.connect(a);
+    const send = await client.callTool({
+      name: "send_text",
+      arguments: {
+        instance: "sample",
+        request_id: "progress",
+        text: "**Checking**",
+        phase: "commentary",
+      },
+      _meta: { threadId: "session" },
+    });
+    expect(send.isError).not.toBe(true);
+    expect(calls[0].params.text).toBe("Checking");
+    await client.callTool({
+      name: "edit_message",
+      arguments: {
+        instance: "sample",
+        request_id: "edit",
+        message_id: 1,
+        text: "**literal**",
+        format: "plain",
+      },
+      _meta: { threadId: "session" },
+    });
+    expect(calls[1].params.text).toBe("**literal**");
+    expect(calls[1].params.entities).toHaveLength(0);
+    const path = join(store.instance("sample"), "outgoing", "test.txt");
+    writeFileSync(path, "sample");
+    await client.callTool({
+      name: "send_document",
+      arguments: {
+        instance: "sample",
+        request_id: "document",
+        path,
+        caption: "_File_",
+      },
+      _meta: { threadId: "session" },
+    });
+    expect(calls[2].params.caption).toBe("File");
+    expect(calls[2].params.caption_entities[0].type).toBe("italic");
+  } finally {
+    await client.close();
+    await server.close();
+    await host.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a healthy receiver holding the lock during handoff does not produce a failure message", async () => {
+  const { identity, LockBusyError } = await import("../bun/process");
+  const { healthyReceiverHandoff } = await import("../bun/worker");
+  const root = mkdtempSync(join(tmpdir(), "telegram-handoff-notice-"));
+  const s = new Store(root);
+  s.configure(
+    "sample",
+    "123456:fixture",
+    { id: 123456, username: "sample" },
+    42,
+    "session",
+  );
+  atomic(join(s.instance("sample"), "config.json"), {
+    ...s.read("sample"),
+    autostart: true,
+  });
+  atomic(
+    join(s.instance("sample"), "worker-process.json"),
+    identity(process.pid),
+  );
+  const health = {
+    pid: process.pid,
+    updated: Date.now() / 1000,
+    telegram: { status: "connected" },
+  };
+  atomic(join(s.instance("sample"), "health.json"), health);
+  const busy = new LockBusyError();
+  const host = new ChannelHost(s, async () => {
+    throw busy;
+  });
+  const calls: string[] = [];
+  host.sender("sample", { threadId: "session" }).api.call = async (method) => {
+    calls.push(method);
+    return { message_id: 1, chat: { id: 42 } };
+  };
+  try {
+    expect(healthyReceiverHandoff(s, "sample", busy)).toBe(true);
+    expect(
+      healthyReceiverHandoff(s, "sample", Error("unrelated failure")),
+    ).toBe(false);
+    await host.connect("sample", { threadId: "session" });
+    await Bun.sleep(20);
+    expect(calls).toHaveLength(0);
+    atomic(join(s.instance("sample"), "health.json"), {
+      ...health,
+      updated: 0,
+    });
+    expect(healthyReceiverHandoff(s, "sample", busy)).toBe(false);
+  } finally {
+    await host.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("receiver failure notices explain recovery without exposing internal exceptions", async () => {
+  const root = mkdtempSync(join(tmpdir(), "telegram-plain-notice-"));
+  const s = new Store(root);
+  s.configure(
+    "sample",
+    "123456:fixture",
+    { id: 123456, username: "sample" },
+    42,
+    "session",
+  );
+  atomic(join(s.instance("sample"), "config.json"), {
+    ...s.read("sample"),
+    autostart: true,
+  });
+  const host = new ChannelHost(s, async () => {
+    throw Error("INTERNAL_EXCEPTION_DETAIL");
+  });
+  const messages: any[] = [];
+  host.sender("sample", { threadId: "session" }).api.call = async (
+    _method,
+    params,
+  ) => {
+    messages.push(params);
+    return { message_id: 1, chat: { id: 42 } };
+  };
+  try {
+    await host.connect("sample", { threadId: "session" });
+    await Bun.sleep(20);
+    expect(messages).toHaveLength(1);
+    expect(messages[0].text).toContain("Reconnecting automatically");
+    expect(messages[0].text).not.toContain("INTERNAL_EXCEPTION_DETAIL");
+    expect(messages[0].text).not.toContain("⚠️");
+  } finally {
+    await host.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

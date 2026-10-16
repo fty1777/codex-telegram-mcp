@@ -1,0 +1,23 @@
+{
+  "name": "codex-telegram-mcp",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bridge": "bun bun/cli.ts",
+    "test": "bun test tests-bun",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.25.3",
+    "entities": "8.1.0",
+    "marked": "18.1.1",
+    "ws": "8.18.3",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/ws": "8.18.1",
+    "typescript": "5.9.3"
+  }
+}
