@@ -11,6 +11,8 @@ import { AppServer } from "./appserver";
 import { Engine, diagnostic } from "./engine";
 import { Store, Journal, atomic, now, privateDir } from "./state";
 import { Telegram, TelegramError, Sender } from "./telegram";
+import { COMMANDS } from "./commands";
+export { COMMANDS } from "./commands";
 import {
   identity,
   waitForReceiverLock,
@@ -33,15 +35,6 @@ export function healthyReceiverHandoff(
       now() - state.health.updated < 15,
   );
 }
-export const COMMANDS = [
-  ["help", "Command descriptions"],
-  ["status", "Session status"],
-  ["queue", "Queued messages"],
-  ["stop", "Interrupt current turn"],
-  ["approve", "Approve pending request"],
-  ["deny", "Deny pending request"],
-  ["answer", "Answer pending question"],
-].map(([command, description]) => ({ command, description }));
 export function pluginEnabled(config: any) {
   if (!config.plugin) return true;
   const p = config.plugin;

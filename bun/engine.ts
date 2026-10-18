@@ -5,8 +5,8 @@ import { Sender, Telegram } from "./telegram";
 import { Interactions } from "./interactions";
 import type { MessageSource } from "./format";
 import { recordTurnTiming } from "./timing";
-export const HELP =
-  "/help — Commands\n/status — Session status\n/queue — Pending messages\n/stop — Interrupt the active turn\n/approve CODE or /deny CODE — Respond to approval\n/answer CODE QUESTION ANSWER — Respond to a question\nMessages steer the active turn. Public progress and replies appear here.";
+import { HELP, QUERY_METHODS, commandHelp, nativeCommand, parseCommand } from "./commands";
+export { HELP } from "./commands";
 export function diagnostic(v: any, token = "", limit: number | null = 1600) {
   let text = typeof v === "string" ? v : legacyJSON(v);
   if (token) text = text.replaceAll(token, "[redacted]");
@@ -254,7 +254,7 @@ export class Engine {
     let submitting = false;
     try {
       if (text.startsWith("/")) {
-        const reply = await this.command(key, text);
+        const reply = await this.command(key, text, () => { submitting = true; });
         const status =
           reply.status === "sent" ? "handled" : "reply_" + reply.status;
         this.journal.finish("in", key, status, { reply });
@@ -307,7 +307,7 @@ export class Engine {
       return "accepted";
     } catch (e) {
       if (
-        e instanceof DeliveryUnknown ||
+        (e instanceof DeliveryUnknown && (!text.startsWith("/") || submitting)) ||
         (submitting && !(e instanceof RpcError))
       ) {
         await this.say(
@@ -326,7 +326,13 @@ export class Engine {
       });
       await this.say(
         "rejected-" + key,
-        "⚠️ Message was not submitted to Codex:\n" + reason,
+        text.startsWith("/")
+          ? e instanceof RpcError && e.code === -32601
+            ? "This command is unavailable in your Codex version. Update Codex to use it."
+            : submitting
+              ? "Codex could not apply this command. Check /status or /goal before trying again."
+              : "Could not retrieve this information from Codex. Try the command again later."
+          : "⚠️ Message was not submitted to Codex:\n" + reason,
       );
       return "rejected";
     }
@@ -337,34 +343,49 @@ export class Engine {
     this.status = "active";
     this.journal.put("active_turn", id);
   }
-  async command(key: string, text: string) {
-    const [head, ...rest] = text.split(/\s+/);
-    const cmd = head.split("@")[0],
-      args = rest.join(" ");
+  async command(key: string, text: string, submitting?: () => void) {
+    const { command: cmd, args } = parseCommand(text);
+    const client: Client = {
+      call: (method, params) => {
+        if (!QUERY_METHODS.has(method)) submitting?.();
+        return this.client.call(method, params);
+      },
+      resume: (thread, options) => this.client.resume(thread, options),
+      send: (message) => { submitting?.(); this.client.send(message); },
+    };
     let reply;
-    if (["/approve", "/deny", "/answer"].includes(cmd))
+    if (["/approve", "/deny", "/answer"].includes(cmd)) {
+      submitting?.();
       reply = this.interactions.respond(cmd, args);
-    else if (["/help", "/start"].includes(cmd)) reply = HELP;
+    }
+    else if (cmd === "/help") reply = commandHelp(args);
+    else if (cmd === "/start") reply = HELP;
     else if (["/status", "/health", "/ping"].includes(cmd)) {
       const t = (
-        await this.client.call("thread/read", {
+        await client.call("thread/read", {
           threadId: this.thread,
           includeTurns: false,
         })
       ).thread;
       reply = `Telegram connected\nSession: ${t.name || this.thread}\nStatus: ${t.status?.type ?? "unknown"}`;
     } else if (cmd === "/queue")
-      reply = `${(await this.client.call("thread/queue/list", { threadId: this.thread })).data.length} queued message(s)`;
+      reply = `${(await client.call("thread/queue/list", { threadId: this.thread })).data.length} queued message(s)`;
     else if (cmd === "/stop") {
       if (this.activeTurn) {
-        await this.client.call("turn/interrupt", {
+        await client.call("turn/interrupt", {
           threadId: this.thread,
           turnId: this.activeTurn,
         });
         reply = "Interrupt requested.";
       } else reply = "No active turn.";
-    } else reply = "Unknown command.\n" + HELP;
-    return await this.say("command-" + key, reply);
+    } else
+      reply =
+        (await nativeCommand(client, this.thread, cmd, args, !!this.activeTurn, {
+          started: (turn) => this.started(turn.id, turn),
+          requestId: `telegram-${this.config.bot_id}-${key}`,
+        })) ??
+        "Unknown command.\n" + HELP;
+    return await this.say("command-" + key, diagnostic(reply, this.store.token(this.instance), null));
   }
   async event(event: any) {
     const m = event.method,
@@ -426,9 +447,10 @@ export class Engine {
           detail: diagnostic(failure, this.store.token(this.instance)),
           updated: Date.now() / 1000,
         });
+      const publicText = item.type === "agentMessage" ? item.text :
+        item.type === "exitedReviewMode" ? item.review : undefined;
       if (
-        item.type === "agentMessage" &&
-        item.text &&
+        publicText &&
         [
           undefined,
           null,
@@ -441,13 +463,22 @@ export class Engine {
           this.journal.get("delivered_item:" + item.id) ||
           this.journal.get(
             "explicit:" +
-              this.journal.fingerprint({ turn: p.turnId, text: item.text }),
+              this.journal.fingerprint({ turn: p.turnId, text: publicText }),
           )
         )
           return;
+        // Native reviews emit the same final text as both agentMessage and
+        // exitedReviewMode, with different item IDs. Reserve before sending so
+        // an ambiguous first delivery cannot be retried through the other ID.
+        if (p.turnId && !["commentary", "partial_answer"].includes(item.phase)) {
+          const key = "public_final:" + this.journal.fingerprint({ turn: p.turnId, text: publicText });
+          const original = this.journal.get(key);
+          if (original && original !== item.id) return;
+          this.journal.put(key, item.id);
+        }
         const result = await this.say(
           "item-" + item.id,
-          item.text,
+          publicText,
           ["commentary", "partial_answer"].includes(item.phase)
             ? "working"
             : "codex",

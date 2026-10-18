@@ -56,6 +56,8 @@ plugin, as described in [setup](setup.md#an-existing-telegram-integration).
 | --- | --- |
 | `bun/channel.ts` | Shared native MCP tools and session-owned bot receivers |
 | `bun/engine.ts` | Public Codex events, incoming messages, and Telegram commands |
+| `bun/commands.ts` | Shared command menu and native Codex slash commands |
+| `bun/session-commands.ts` | Model settings, planning, reviews, and discovery queries |
 | `bun/telegram.ts` | Bot API transport and durable send receipts |
 | `bun/format.ts` | Markdown conversion, quote styling, and message splitting |
 | `bun/timing.ts` | Persistent task clocks and elapsed-time display |
@@ -132,6 +134,49 @@ refused. A session handoff pauses the old binding and holds its pending inbox;
 receipts remain intact. Failed handoffs leave the old binding paused. Local account
 access, credentials, and management tools remain trusted.
 
+## Slash commands
+
+Telegram slash commands are dispatched locally; they are never passed to a model
+as plain prompts. `/goal` uses `thread/goal/get`, `thread/goal/set`, and
+`thread/goal/clear` on the bound thread, with `origin: "user"` for explicit owner
+mutations. `/goal edit OBJECTIVE` preserves the current status; pause and resume
+omit the objective to preserve usage accounting and budget. Bare `/goal edit`
+shows the goal and inline editing instructions rather than opening a terminal UI.
+Objectives retain internal whitespace and are limited to 4,000 Unicode characters.
+
+`/compact` uses `thread/compact/start` and refuses while a known turn is active;
+the server remains authoritative about concurrent work. `/rename NAME` uses
+`thread/name/set`. Unsupported methods produce an upgrade notice. Rejected commands
+keep raw diagnostics in the private journal. Unknown outcomes and failed reply
+delivery retain the inbound reservation and never automatically replay mutations.
+The help text and Telegram menu share one command registry in `bun/commands.ts`.
+`/help COMMAND` is handled without any App Server or model call. Other commands'
+arguments are never intercepted as help: `/goal help` sets the objective to `help`,
+and `/goal --help` sets the objective to `--help`. `build:plugin` also generates `docs/commands.md` from
+that registry, and CI checks both the reference and bundle for freshness.
+
+`bun/session-commands.ts` uses `thread/settings/update` for model, effort, service
+tier, planning mode, and named permission profiles. Model and effort choices are
+validated against the paginated model catalog; permission choices must be allowed
+by the catalog resolved for the current working directory. Settings are owned by
+Codex, without a second copy that could override terminal changes after reconnect.
+Queued setting changes are observed with bounded reads, never repeated writes;
+an unconfirmed change is described as requested. Fresh loaded sessions fall back
+to `thread/read` when no rollout exists, and unknown settings stay unknown.
+
+`/plan TASK` and `/skills NAME TASK` start native turns with stable message IDs.
+`/review` uses `review/start` inline; `exitedReviewMode` results are forwarded with
+the same delivery safeguards as public assistant messages. New-turn commands
+refuse during active work. `/mcp`, `/skills`, `/plugins`, and `/ps` query inventories;
+listings exclude private connection configuration and redact credentials. Query
+timeouts return an information-unavailable notice, without suggesting a task was
+submitted. The [command reference](commands.md) lists exact syntax and scope.
+Other CLI commands, including terminal controls and session switching, are not
+implemented and are never silently converted into model prompts.
+
+See the official [slash command reference](https://developers.openai.com/codex/cli/slash-commands)
+and [App Server goal API](https://developers.openai.com/codex/app-server#manage-a-thread-goal).
+
 ## Sending and formatting
 
 Use stable `request_id` values for `send_text`, `edit_message`, `send_photo`, and
@@ -201,6 +246,7 @@ Read probes before running them: they create temporary plugins and sessions, and
 some may run a model turn. Telegram is stubbed; they send no Telegram messages.
 
 - `scripts/probe-bun-install.ts` — installation, reinstall, cleanup, and retained settings.
+- `scripts/probe-slash-commands.ts` — real App Server settings and discovery in an isolated thread, without model turns or Telegram requests.
 - `scripts/probe-first-load.ts` — first installation and reload of a disposable session.
 - `scripts/probe-channel.ts`, `scripts/probe-channel-migration.ts` — shared plugin behavior.
 - `scripts/probe-mcp-lifecycle.ts`, `scripts/probe-mcp-plugin.ts` — legacy lifecycle behavior.

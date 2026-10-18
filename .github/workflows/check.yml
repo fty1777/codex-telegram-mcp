@@ -17,4 +17,4 @@ jobs:
       - run: bun run typecheck
       - run: bun test tests-bun
       - run: bun run build:plugin
-      - run: git diff --exit-code -- plugins/telegram
+      - run: git diff --exit-code -- plugins/telegram docs/commands.md

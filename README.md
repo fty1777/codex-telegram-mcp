@@ -51,14 +51,26 @@ System notices appear as quotes with a **System** heading inside. Codex messages
 
 Replies support text formatting.
 
+Send `/help` for commands or `/help goal` for usage and examples. Help is returned
+directly without invoking a model. See the [command reference](docs/commands.md)
+for all supported commands, including model settings, planning, and code review.
+
 | Command | Action |
 | --- | --- |
 | `/help` | Show commands |
 | `/status` | Check the connection and session |
+| `/goal` | Show the current goal |
+| `/goal OBJECTIVE`, `/goal edit OBJECTIVE` | Set or change the goal |
+| `/goal pause`, `/goal resume`, `/goal clear` | Pause, resume, or remove the goal |
+| `/compact` | Compact conversation history |
+| `/rename NAME` | Rename the session |
 | `/stop` | Interrupt the current task |
 | `/queue` | Check queued messages |
 | `/approve CODE`, `/deny CODE` | Respond to an approval request |
 | `/answer CODE QUESTION ANSWER` | Answer a pending question |
+
+Goals, model settings, planning mode, permissions, and session names are shared
+with Codex CLI. Commands run directly on the connected session.
 
 ## More details
 

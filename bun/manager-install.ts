@@ -5,6 +5,7 @@ import { codex, prepareRuntime, refresh, collect } from "./install";
 import { AppServer } from "./appserver";
 import { controlMcp } from "./lifecycle";
 import { record, lock, status, sleep } from "./process";
+import metadata from "../package.json";
 
 export async function installManager(
   store: Store,
@@ -90,7 +91,7 @@ async function installManagerFiles(
     throw Error("Invalid MCP server name");
   const source = join(store.root, "plugins", selector);
   const plugin = join(source, "plugins", selector);
-  const version = "0.4.0+" + digest.slice(0, 12);
+  const version = metadata.version + "+" + digest.slice(0, 12);
   if (previous && previous.plugin_id !== id)
     throw Error("Manager installation belongs to another root");
   if (

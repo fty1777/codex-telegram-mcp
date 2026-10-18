@@ -2,6 +2,7 @@
 // Run from a checkout after `bun install --frozen-lockfile`.
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { COMMANDS, commandHelp } from "../bun/commands";
 
 const repo = resolve(import.meta.dir, ".."), output = join(repo, "plugins/telegram");
 const built = await Bun.build({
@@ -45,4 +46,14 @@ const notices = [...packages].sort().map((directory) => {
   return `${metadata.name}@${metadata.version}\n${names.map((name) => readFileSync(join(directory, name), "utf8").trim()).join("\n\n")}`;
 });
 writeFileSync(join(output, "THIRD_PARTY_NOTICES.txt"), notices.join("\n\n" + "=".repeat(72) + "\n\n") + "\n");
+writeFileSync(join(repo, "docs/commands.md"),
+  "# Telegram commands\n\n[Back to the README](../README.md)\n\n" +
+  "Send `/help` or `/help COMMAND` to your bot for instructions without invoking a model.\n" +
+  "Help is available through `/help COMMAND`; arguments to other commands retain their normal meaning.\n" +
+  "For example, `/goal help` sets a goal whose objective is `help`. Commands use the same session as Codex CLI.\n\n" +
+  "<!-- Generated from bun/commands.ts by bun run build:plugin. -->\n\n" +
+  COMMANDS.map(({ command }) => `## /${command}\n\n\`\`\`text\n${commandHelp(command)}\n\`\`\``).join("\n\n") +
+  "\n\n## Other CLI commands\n\nOnly the commands above are implemented here. Terminal controls, account changes,\n" +
+  "session switching, and other CLI commands are not forwarded as model prompts.\n" +
+  "Use Codex CLI for these operations. An unknown command returns help and does not invoke a model.\n");
 console.log(`Built Telegram plugin ${manifest.version} (${Buffer.byteLength(source)} bytes)`);

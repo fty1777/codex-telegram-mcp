@@ -15,6 +15,221 @@ import { Engine, chunks, messageInput } from "../bun/engine";
 import { DeliveryUnknown, RpcError } from "../bun/appserver";
 import { Interactions } from "../bun/interactions";
 import { install, uninstall } from "../bun/install";
+import { COMMANDS, HELP, parseCommand } from "../bun/commands";
+
+test("slash command menu matches help and preserves multiline objectives", () => {
+  for (const { command } of COMMANDS) expect(HELP).toContain("/" + command);
+  expect(parseCommand("/goal@fixture First line\n  preserve  spaces")).toEqual({
+    command: "/goal", args: "First line\n  preserve  spaces",
+  });
+});
+
+test("command help is local, works while busy, and cannot accidentally create a goal", async () => {
+  const f = engineFixture();
+  f.e.activeTurn = "busy";
+  f.client.call = async () => { throw Error("Help must not call Codex"); };
+  f.client.resume = async () => { throw Error("Help must not resume Codex"); };
+  try {
+    let id = 1;
+    for (const command of ["/help goal", "/help /goal", "/help model", "/help permissions"]) {
+      expect(await f.e.receiveBatch([update(id++, command)])).toBe("handled");
+      expect(f.calls.at(-1).params.text).not.toContain("Unknown command");
+    }
+    expect(f.e.activeTurn).toBe("busy");
+    expect(f.rpc).toHaveLength(0);
+  } finally { f.done(); }
+});
+
+test("help-like arguments retain their native meaning instead of being intercepted", async () => {
+  const f = engineFixture();
+  f.client.call = async (method: string, params: any) => {
+    f.rpc.push({ method, params });
+    return { goal: { ...params, tokensUsed: 0, timeUsedSeconds: 0 } };
+  };
+  try {
+    await f.e.receiveBatch([update(1, "/goal help")]);
+    await f.e.receiveBatch([update(2, "/goal --help")]);
+    await f.e.receiveBatch([update(3, "/rename help")]);
+    await f.e.receiveBatch([update(4, "/rename --help")]);
+    expect(f.rpc).toEqual([
+      { method: "thread/goal/set", params: { threadId: "thread", origin: "user", objective: "help", status: "active" } },
+      { method: "thread/goal/set", params: { threadId: "thread", origin: "user", objective: "--help", status: "active" } },
+      { method: "thread/name/set", params: { threadId: "thread", name: "help" } },
+      { method: "thread/name/set", params: { threadId: "thread", name: "--help" } },
+    ]);
+  } finally { f.done(); }
+});
+
+test("query timeouts never imply that a task may have been submitted", async () => {
+  const f = engineFixture();
+  f.client.call = async () => { throw new DeliveryUnknown("metadata timeout"); };
+  try {
+    expect(await f.e.receiveBatch([update(1, "/goal")])).toBe("rejected");
+    expect(f.calls.at(-1).params.text).toContain("Could not retrieve");
+    expect(f.calls.at(-1).params.text).not.toContain("acceptance");
+    expect(f.e.journal.status("in", "1").status).toBe("rejected");
+  } finally { f.done(); }
+});
+
+test("review and planning requests record the active turn immediately and stay one shot", async () => {
+  const f = engineFixture();
+  f.client.resume = async () => ({ model: "model", reasoningEffort: "high" });
+  try {
+    expect(await f.e.receiveBatch([update(1, "/plan Design a test")])).toBe("handled");
+    expect(f.e.activeTurn).toBe("turn");
+    expect(f.rpc.map(x => x.method)).toEqual(["thread/settings/update", "turn/start"]);
+    await f.e.receiveBatch([update(1, "/plan Design a test")]);
+    expect(f.rpc).toHaveLength(2);
+    f.e.activeTurn = null;
+    await f.e.receiveBatch([update(2, "/review")]);
+    expect(String(f.e.activeTurn)).toBe("turn");
+    await f.e.event({ method: "item/completed", params: { threadId: "thread", turnId: "turn", item: { type: "exitedReviewMode", id: "review-result", review: "Review complete: no findings." } } });
+    expect(f.calls.at(-1).params.text).toContain("Review complete: no findings.");
+    const count = f.calls.length;
+    await f.e.event({ method: "item/completed", params: { threadId: "thread", turnId: "turn", item: { type: "exitedReviewMode", id: "review-result", review: "Review complete: no findings." } } });
+    expect(f.calls).toHaveLength(count);
+  } finally { f.done(); }
+});
+
+test("background terminal query redacts credentials before Telegram delivery", async () => {
+  const f = engineFixture();
+  f.client.call = async () => ({ data: [{ processId: "job", command: "curl -H Authorization: Bearer abcdefghijk" }], nextCursor: null });
+  try {
+    await f.e.receiveBatch([update(1, "/ps")]);
+    expect(f.calls.at(-1).params.text).not.toContain("abcdefghijk");
+    expect(f.calls.at(-1).params.text).toContain("[redacted]");
+  } finally { f.done(); }
+});
+
+test("dual native review result events never duplicate a confirmed or ambiguous final", async () => {
+  for (const ambiguous of [false, true]) {
+    const f = engineFixture();
+    let attempts = 0;
+    const call = f.api.call;
+    f.api.call = async (...args: Parameters<typeof call>) => {
+      attempts++;
+      if (ambiguous) throw Error("lost response");
+      return call(...args);
+    };
+    try {
+      for (const item of [
+        { type: "agentMessage", id: "agent-final", text: "No review findings.", phase: null },
+        { type: "exitedReviewMode", id: "review-final", review: "No review findings." },
+      ]) await f.e.event({ method: "item/completed", params: { threadId: "thread", turnId: "review-turn", item } });
+      expect(attempts).toBe(1);
+    } finally { f.done(); }
+  }
+});
+
+test("goal commands share the bound thread, preserve pause and usage, and never prompt the model", async () => {
+  const f = engineFixture();
+  let goal: any = null;
+  f.client.call = async (method: string, params: any) => {
+    f.rpc.push({ method, params });
+    expect(params.threadId).toBe("thread");
+    if (method === "thread/goal/get") return { goal };
+    expect(params.origin).toBe("user");
+    if (method === "thread/goal/clear") {
+      const cleared = !!goal; goal = null; return { cleared };
+    }
+    expect(method).toBe("thread/goal/set");
+    goal = { tokensUsed: 123, tokenBudget: 1000, timeUsedSeconds: 12, ...goal, ...params };
+    return { goal };
+  };
+  try {
+    for (const [id, text] of [
+      [1, "/goal"], [2, "/goal pause"],
+      [3, "/goal@fixture Fix this\n  then  test"], [4, "/goal pause"],
+      [5, "/goal edit Revise this\n  carefully"],
+    ] as const) expect(await f.e.receiveBatch([update(id, text)])).toBe("handled");
+    expect(goal.objective).toBe("Revise this\n  carefully");
+    expect(goal.status).toBe("paused");
+    expect(goal.tokensUsed).toBe(123);
+    expect(goal.tokenBudget).toBe(1000);
+    expect(f.rpc.at(-1).params).not.toHaveProperty("status");
+    await f.e.receiveBatch([update(6, "/goal resume")]);
+    expect(goal.status).toBe("active");
+    await f.e.receiveBatch([update(7, "/goal edit")]);
+    expect(f.calls.at(-1).params.text).toContain("/goal edit OBJECTIVE");
+    await f.e.receiveBatch([update(8, "/goal clear")]);
+    expect(goal).toBeNull();
+    await f.e.receiveBatch([update(8, "/goal clear")]);
+    expect(f.rpc.filter(x => x.method === "thread/goal/clear")).toHaveLength(1);
+    expect(f.rpc.some(x => x.method.startsWith("turn/"))).toBe(false);
+  } finally { f.done(); }
+});
+
+test("goal validation makes no mutation and accepts 4000 Unicode characters", async () => {
+  const f = engineFixture();
+  f.client.call = async (method: string, params: any) => {
+    f.rpc.push({ method, params });
+    return { goal: method.endsWith("get") ? null : { ...params, tokensUsed: 0, timeUsedSeconds: 0 } };
+  };
+  try {
+    await f.e.receiveBatch([update(1, "/goal " + "😀".repeat(4001))]);
+    expect(f.rpc).toHaveLength(0);
+    await f.e.receiveBatch([update(2, "/goal edit A new objective")]);
+    expect(f.rpc.map(x => x.method)).toEqual(["thread/goal/get"]);
+    await f.e.receiveBatch([update(3, "/goal " + "😀".repeat(4000))]);
+    expect(f.rpc.at(-1).method).toBe("thread/goal/set");
+    const foreign = update(4, "/goal clear"); foreign.message.from.id = 99;
+    expect(await f.e.receiveBatch([foreign])).toBe("ignored");
+    expect(f.rpc.some(x => x.method.endsWith("clear"))).toBe(false);
+  } finally { f.done(); }
+});
+
+test("ambiguous goal mutation and missing reply do not repeat a command", async () => {
+  for (const lostReply of [false, true]) {
+    const f = engineFixture();
+    let mutations = 0;
+    f.client.call = async () => {
+      mutations++;
+      if (!lostReply) throw new DeliveryUnknown("test timeout");
+      return { cleared: true };
+    };
+    if (lostReply) f.api.call = async () => { throw Error("lost Telegram response"); };
+    try {
+      const expected = lostReply ? "reply_unknown" : "unknown";
+      expect(await f.e.receiveBatch([update(1, "/goal clear")])).toBe(expected);
+      expect(await f.e.receiveBatch([update(1, "/goal clear")])).toBe(expected);
+      expect(mutations).toBe(1);
+    } finally { f.done(); }
+  }
+});
+
+test("unsupported or rejected native commands have calm notices and local diagnostics", async () => {
+  for (const code of [-32601, -32602]) {
+    const f = engineFixture();
+    f.client.call = async () => { throw new RpcError({ code, message: "INTERNAL test exception" }); };
+    try {
+      expect(await f.e.receiveBatch([update(1, "/goal")])).toBe("rejected");
+      expect(f.calls.at(-1).params.text).not.toContain("INTERNAL");
+      expect(f.calls.at(-1).params.text).toContain(code === -32601 ? "Update Codex" : "Could not retrieve");
+      expect(f.e.journal.status("in", "1").details.reason).toContain("INTERNAL");
+    } finally { f.done(); }
+  }
+});
+
+test("compact refuses active work; rename preserves text and both operate on the bound thread", async () => {
+  const f = engineFixture();
+  try {
+    f.e.activeTurn = "busy";
+    await f.e.receiveBatch([update(1, "/compact")]);
+    expect(f.rpc).toHaveLength(0);
+    f.e.activeTurn = null;
+    await f.e.receiveBatch([update(2, "/compact now")]);
+    await f.e.receiveBatch([update(3, "/rename")]);
+    expect(f.rpc).toHaveLength(0);
+    await f.e.receiveBatch([update(4, "/compact")]);
+    await f.e.receiveBatch([update(5, "/rename My  session")]);
+    expect(f.rpc).toEqual([
+      { method: "thread/compact/start", params: { threadId: "thread" } },
+      { method: "thread/name/set", params: { threadId: "thread", name: "My  session" } },
+    ]);
+    await f.e.receiveBatch([update(5, "/rename My  session")]);
+    expect(f.rpc).toHaveLength(2);
+  } finally { f.done(); }
+});
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "bridge-bun-"));
   const s = new Store(root);
