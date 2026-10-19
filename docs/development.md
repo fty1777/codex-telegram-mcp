@@ -196,7 +196,7 @@ are differenced against the observed preceding turn's total; `last` is one model
 request and must never be mistaken for a whole turn. Counts include reported
 input and output, including cached input; they are not price estimates. Input,
 cached input, and output are also differenced individually and displayed as
-`↑N (cache N) ↓N`; cached input is a subset of input, not an additional
+`↑N (cN) ↓N`; cached input is a subset of input, not an additional
 count. Components are omitted if their matching baseline is unavailable (for
 example, the first turn after upgrading an older journal) or a component resets.
 Session components are never mixed with turn components. Counts use `k` with one

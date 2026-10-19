@@ -273,7 +273,7 @@ export function messages(
     const parts = (value?: Partial<Usage>, session = false) => {
       if (!value || ![value.inputTokens, value.cachedInputTokens, value.outputTokens].every(n => Number.isSafeInteger(n) && n! >= 0)
           || value.cachedInputTokens! > value.inputTokens!) return "";
-      return `↑${count(value.inputTokens!, session)} (cache ${count(value.cachedInputTokens!, session)}) ↓${count(value.outputTokens!, session)}`;
+      return `↑${count(value.inputTokens!, session)} (c${count(value.cachedInputTokens!, session)}) ↓${count(value.outputTokens!, session)}`;
     };
     if (usage.scope === "turn") stats.push(parts(usage) || count(usage.tokens));
     const session = usage.sessionTokens ?? (usage.scope === "session" ? usage.tokens : undefined);
