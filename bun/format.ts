@@ -3,6 +3,20 @@ import { decodeHTML } from "entities";
 import { durationText } from "./timing";
 import type { Usage } from "./usage";
 
+const GOAL_LABELS: Record<string, string> = {
+  active: "Pursuing goal",
+  complete: "Goal achieved",
+  paused: "Goal paused",
+  blocked: "Goal blocked",
+  usageLimited: "Goal usage limit reached",
+  budgetLimited: "Goal token budget reached",
+};
+function tokenCount(n: number): string {
+  const millions = n >= 1_000_000;
+  const rounded = Math.round(n / (millions ? 100_000 : 100)) / 10;
+  return `${rounded.toFixed(1)}${millions ? "m" : "k"}`;
+}
+
 export type MessageSource = "system" | "working" | "codex";
 export type TextFormat = "markdown" | "plain";
 export interface Entity {
@@ -22,6 +36,8 @@ export interface Entity {
 export interface RichText {
   text: string;
   entities: Entity[];
+  bodyHtml?: string;
+  footerOffset?: number;
 }
 
 function safeUrl(value: string): boolean {
@@ -112,14 +128,14 @@ export function markdown(text: string): RichText {
           separate();
           break;
         case "link":
-        case "image":
-          if (safeUrl(decodeHTML(t.href)))
-            span("text_link", child, { url: decodeHTML(t.href) });
-          else {
-            child();
-            add(` (${t.href})`);
-          }
+        case "image": {
+          const url = decodeHTML(t.href),
+            start = output.length;
+          if (safeUrl(url)) span("text_link", child, { url });
+          else child();
+          if (output.slice(start) !== url) add(` (${url})`);
           break;
+        }
         case "blockquote": {
           separate();
           const offset = output.length;
@@ -254,6 +270,12 @@ export function messages(
   limit = 4096,
   elapsed?: number,
   usage?: Usage,
+  status?: {
+    goal?: string;
+    questions?: number;
+    model?: string;
+    effort?: string;
+  },
 ): RichText[] {
   const body =
     format === "markdown" ? markdown(input) : { text: input, entities: [] };
@@ -264,26 +286,63 @@ export function messages(
   }
   const prefix = source === "system" && body.text.length ? "System\n" : "";
   const stats: string[] = [];
-  if (typeof elapsed === "number" && Number.isFinite(elapsed)) stats.push(durationText(elapsed));
+  if (typeof elapsed === "number" && Number.isFinite(elapsed))
+    stats.push(durationText(elapsed));
   if (usage && Number.isSafeInteger(usage.tokens) && usage.tokens >= 0) {
-    const count = (n: number, session = false) => {
-      const millions = session && n >= 1_000_000;
-      return `${(Math.round(n / (millions ? 100_000 : 100)) / 10).toFixed(1)}${millions ? "m" : "k"}`;
+    const parts = (value?: Partial<Usage>) => {
+      if (
+        !value ||
+        ![value.inputTokens, value.cachedInputTokens, value.outputTokens].every(
+          (n) => Number.isSafeInteger(n) && n! >= 0,
+        ) ||
+        value.cachedInputTokens! > value.inputTokens!
+      )
+        return "";
+      return `↑${tokenCount(value.inputTokens! - value.cachedInputTokens!)} c${tokenCount(value.cachedInputTokens!)} ↓${tokenCount(value.outputTokens!)}`;
     };
-    const parts = (value?: Partial<Usage>, session = false) => {
-      if (!value || ![value.inputTokens, value.cachedInputTokens, value.outputTokens].every(n => Number.isSafeInteger(n) && n! >= 0)
-          || value.cachedInputTokens! > value.inputTokens!) return "";
-      return `↑${count(value.inputTokens! - value.cachedInputTokens!, session)} c${count(value.cachedInputTokens!, session)} ↓${count(value.outputTokens!, session)}`;
-    };
-    if (usage.scope === "turn") stats.push(parts(usage) || count(usage.tokens));
-    const session = usage.sessionTokens ?? (usage.scope === "session" ? usage.tokens : undefined);
+    if (usage.scope === "turn")
+      stats.push(parts(usage) || tokenCount(usage.tokens));
+    const session =
+      usage.sessionTokens ??
+      (usage.scope === "session" ? usage.tokens : undefined);
     if (Number.isSafeInteger(session) && session! >= 0) {
-      const detail = parts(usage.sessionBreakdown ?? (usage.scope === "session" ? usage : undefined), true);
-      stats.push(`session ${detail || count(session!, true)}`);
+      const detail = parts(
+        usage.sessionBreakdown ??
+          (usage.scope === "session" ? usage : undefined),
+      );
+      stats.push(`session ${detail || tokenCount(session!)}`);
     }
   }
-  const footer = source !== "system" && body.text.length && stats.length
-    ? `(Codex ${source === "working" ? "Working" : "Worked"} ${stats.join(" · ")})` : "";
+  if (usage?.context) {
+    const { tokens, window, usedPercent } = usage.context;
+    if (
+      [tokens, window, usedPercent].every(Number.isSafeInteger) &&
+      tokens >= 0 &&
+      window > 0 &&
+      usedPercent >= 0 &&
+      usedPercent <= 100
+    )
+      stats.push(
+        `ctx ${tokenCount(tokens)}/${tokenCount(window)} ${usedPercent}%`,
+      );
+  }
+  if (status?.model)
+    stats.push(status.model + (status.effort ? ` ${status.effort}` : ""));
+  if (status?.goal)
+    stats.push(GOAL_LABELS[status.goal] ?? `Goal ${status.goal}`);
+  if (status?.questions) stats.push(`questions ${status.questions}`);
+  const footer =
+    source !== "system" && body.text.length && stats.length
+      ? `Codex ${source === "working" ? "Working" : "Worked"} ${stats.join(" · ")}`
+      : "";
+  const footerStyles: Entity[] = !footer
+    ? []
+    : source === "working"
+      ? [{ type: "code", offset: 0, length: footer.length }]
+      : [
+          { type: "bold", offset: 0, length: footer.length },
+          { type: "italic", offset: 0, length: footer.length },
+        ];
   const budget = limit - prefix.length - (footer ? footer.length + 1 : 0);
   if (budget < 2) throw Error("Message limit is too small");
   const result: RichText[] = [];
@@ -312,16 +371,18 @@ export function messages(
           length: b - a,
         });
     }
-    const footerEntity: Entity | undefined =
-      footer && end === body.text.length
-        ? {
-            type: "italic",
-            offset: prefix.length + end - start + 1,
-            length: footer.length,
-          }
-        : undefined;
+    const footerEntities =
+      end === body.text.length
+        ? footerStyles.map((entity) => ({
+            ...entity,
+            offset: entity.offset + prefix.length + end - start + 1,
+          }))
+        : [];
     // Keep well below Telegram's entity-count limits without losing any text.
     result.push({
+      ...(footer && end === body.text.length
+        ? { footerOffset: prefix.length + end - start + 1 }
+        : {}),
       text:
         prefix +
         body.text.slice(start, end) +
@@ -329,8 +390,8 @@ export function messages(
       entities: [
         ...entities
           .sort((a, b) => a.offset - b.offset || b.length - a.length)
-          .slice(0, footerEntity ? 89 : 90),
-        ...(footerEntity ? [footerEntity] : []),
+          .slice(0, 90 - footerEntities.length),
+        ...footerEntities,
       ],
     });
     start = end;

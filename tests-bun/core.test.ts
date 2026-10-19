@@ -1,3 +1,4 @@
+import { telegramView } from "./telegram-view";
 import { test, expect } from "bun:test";
 import {
   mkdtempSync,
@@ -9,9 +10,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Store, Journal, hash, atomic } from "../bun/state";
+import { Store, Journal, hash } from "../bun/state";
 import { Sender, Telegram, TelegramError } from "../bun/telegram";
-import { Engine, chunks, messageInput } from "../bun/engine";
+import { Engine, chunks } from "../bun/engine";
 import { DeliveryUnknown, RpcError } from "../bun/appserver";
 import { Interactions } from "../bun/interactions";
 import { install, uninstall } from "../bun/install";
@@ -20,24 +21,36 @@ import { COMMANDS, HELP, parseCommand } from "../bun/commands";
 test("slash command menu matches help and preserves multiline objectives", () => {
   for (const { command } of COMMANDS) expect(HELP).toContain("/" + command);
   expect(parseCommand("/goal@fixture First line\n  preserve  spaces")).toEqual({
-    command: "/goal", args: "First line\n  preserve  spaces",
+    command: "/goal",
+    args: "First line\n  preserve  spaces",
   });
 });
 
 test("command help is local, works while busy, and cannot accidentally create a goal", async () => {
   const f = engineFixture();
   f.e.activeTurn = "busy";
-  f.client.call = async () => { throw Error("Help must not call Codex"); };
-  f.client.resume = async () => { throw Error("Help must not resume Codex"); };
+  f.client.call = async () => {
+    throw Error("Help must not call Codex");
+  };
+  f.client.resume = async () => {
+    throw Error("Help must not resume Codex");
+  };
   try {
     let id = 1;
-    for (const command of ["/help goal", "/help /goal", "/help model", "/help permissions"]) {
+    for (const command of [
+      "/help goal",
+      "/help /goal",
+      "/help model",
+      "/help permissions",
+    ]) {
       expect(await f.e.receiveBatch([update(id++, command)])).toBe("handled");
       expect(f.calls.at(-1).params.text).not.toContain("Unknown command");
     }
     expect(f.e.activeTurn).toBe("busy");
     expect(f.rpc).toHaveLength(0);
-  } finally { f.done(); }
+  } finally {
+    f.done();
+  }
 });
 
 test("help-like arguments retain their native meaning instead of being intercepted", async () => {
@@ -52,92 +65,231 @@ test("help-like arguments retain their native meaning instead of being intercept
     await f.e.receiveBatch([update(3, "/rename help")]);
     await f.e.receiveBatch([update(4, "/rename --help")]);
     expect(f.rpc).toEqual([
-      { method: "thread/goal/set", params: { threadId: "thread", origin: "user", objective: "help", status: "active" } },
-      { method: "thread/goal/set", params: { threadId: "thread", origin: "user", objective: "--help", status: "active" } },
-      { method: "thread/name/set", params: { threadId: "thread", name: "help" } },
-      { method: "thread/name/set", params: { threadId: "thread", name: "--help" } },
+      {
+        method: "thread/goal/set",
+        params: {
+          threadId: "thread",
+          origin: "user",
+          objective: "help",
+          status: "active",
+        },
+      },
+      {
+        method: "thread/goal/set",
+        params: {
+          threadId: "thread",
+          origin: "user",
+          objective: "--help",
+          status: "active",
+        },
+      },
+      {
+        method: "thread/name/set",
+        params: { threadId: "thread", name: "help" },
+      },
+      {
+        method: "thread/name/set",
+        params: { threadId: "thread", name: "--help" },
+      },
     ]);
-  } finally { f.done(); }
+  } finally {
+    f.done();
+  }
 });
 
 test("query timeouts never imply that a task may have been submitted", async () => {
   const f = engineFixture();
-  f.client.call = async () => { throw new DeliveryUnknown("metadata timeout"); };
+  f.client.call = async () => {
+    throw new DeliveryUnknown("metadata timeout");
+  };
   try {
     expect(await f.e.receiveBatch([update(1, "/goal")])).toBe("rejected");
     expect(f.calls.at(-1).params.text).toContain("Could not retrieve");
     expect(f.calls.at(-1).params.text).not.toContain("acceptance");
     expect(f.e.journal.status("in", "1").status).toBe("rejected");
-  } finally { f.done(); }
+  } finally {
+    f.done();
+  }
 });
 
 test("review and planning requests record the active turn immediately and stay one shot", async () => {
   const f = engineFixture();
   f.client.resume = async () => ({ model: "model", reasoningEffort: "high" });
   try {
-    expect(await f.e.receiveBatch([update(1, "/plan Design a test")])).toBe("handled");
+    expect(await f.e.receiveBatch([update(1, "/plan Design a test")])).toBe(
+      "handled",
+    );
     expect(f.e.activeTurn).toBe("turn");
-    expect(f.rpc.map(x => x.method)).toEqual(["thread/settings/update", "turn/start"]);
+    expect(f.rpc.map((x) => x.method)).toEqual([
+      "thread/settings/update",
+      "turn/start",
+    ]);
     await f.e.receiveBatch([update(1, "/plan Design a test")]);
     expect(f.rpc).toHaveLength(2);
     f.e.activeTurn = null;
     await f.e.receiveBatch([update(2, "/review")]);
     expect(String(f.e.activeTurn)).toBe("turn");
-    await f.e.event({ method: "item/completed", params: { threadId: "thread", turnId: "turn", item: { type: "exitedReviewMode", id: "review-result", review: "Review complete: no findings." } } });
-    await f.e.event({ method: "turn/completed", params: { threadId: "thread", turn: { id: "turn" } } });
-    expect(f.calls.at(-1).params.text).toContain("Review complete: no findings.");
+    await f.e.event({
+      method: "item/completed",
+      params: {
+        threadId: "thread",
+        turnId: "turn",
+        item: {
+          type: "exitedReviewMode",
+          id: "review-result",
+          review: "Review complete: no findings.",
+        },
+      },
+    });
+    await f.e.event({
+      method: "turn/completed",
+      params: { threadId: "thread", turn: { id: "turn" } },
+    });
+    expect(f.calls.at(-1).params.text).toContain(
+      "Review complete: no findings.",
+    );
     const count = f.calls.length;
-    await f.e.event({ method: "item/completed", params: { threadId: "thread", turnId: "turn", item: { type: "exitedReviewMode", id: "review-result", review: "Review complete: no findings." } } });
+    await f.e.event({
+      method: "item/completed",
+      params: {
+        threadId: "thread",
+        turnId: "turn",
+        item: {
+          type: "exitedReviewMode",
+          id: "review-result",
+          review: "Review complete: no findings.",
+        },
+      },
+    });
     expect(f.calls).toHaveLength(count);
-  } finally { f.done(); }
+  } finally {
+    f.done();
+  }
 });
 
-test("final forwarding includes usage reported after the final text and preserves the italic footer", async () => {
+test("final forwarding includes usage reported after the final text and uses a native footer", async () => {
   const f = engineFixture();
-  const event = (method: string, params: any) => f.e.event({ method, params: { threadId: "thread", ...params } });
+  const event = (method: string, params: any) =>
+    f.e.event({ method, params: { threadId: "thread", ...params } });
   try {
-    await event("thread/tokenUsage/updated", { turnId: "prior", tokenUsage: { total: { totalTokens: 1000 } } });
-    await event("turn/started", { turn: { id: "current", startedAt: Math.floor(Date.now() / 1000) - 10 } });
-    await event("thread/tokenUsage/updated", { turnId: "current", tokenUsage: { total: { totalTokens: 1100 } } });
-    await event("item/completed", { turnId: "current", item: { id: "progress", type: "agentMessage", phase: "commentary", text: "Progress" } });
-    expect(f.calls[0].params.text).toContain(" · 0.1k · session 1.1k)");
-    await event("item/completed", { turnId: "current", item: { id: "final", type: "agentMessage", phase: "final_answer", text: "Done" } });
+    await event("thread/tokenUsage/updated", {
+      turnId: "prior",
+      tokenUsage: { total: { totalTokens: 1000 } },
+    });
+    await event("turn/started", {
+      turn: { id: "current", startedAt: Math.floor(Date.now() / 1000) - 10 },
+    });
+    await event("thread/tokenUsage/updated", {
+      turnId: "current",
+      tokenUsage: { total: { totalTokens: 1100 } },
+    });
+    await event("item/completed", {
+      turnId: "current",
+      item: {
+        id: "progress",
+        type: "agentMessage",
+        phase: "commentary",
+        text: "Progress",
+      },
+    });
+    expect(f.calls[0].params.text).toContain(" · 0.1k · session 1.1k");
+    await event("item/completed", {
+      turnId: "current",
+      item: {
+        id: "final",
+        type: "agentMessage",
+        phase: "final_answer",
+        text: "Done",
+      },
+    });
     expect(f.calls).toHaveLength(1);
-    await event("thread/tokenUsage/updated", { turnId: "current", tokenUsage: { total: { totalTokens: 1250 } } });
-    await event("turn/completed", { turn: { id: "current", durationMs: 12000 } });
-    expect(f.calls[1].params.text).toBe("Done\n(Codex Worked 12s · 0.3k · session 1.3k)");
-    expect(f.calls[1].params.entities.at(-1).type).toBe("italic");
-    await event("turn/completed", { turn: { id: "current", durationMs: 12000 } });
+    await event("thread/tokenUsage/updated", {
+      turnId: "current",
+      tokenUsage: { total: { totalTokens: 1250 } },
+    });
+    await event("turn/completed", {
+      turn: { id: "current", durationMs: 12000 },
+    });
+    expect(f.calls[1].params.text).toBe(
+      "Done\nCodex Worked 12s · 0.3k · session 1.3k",
+    );
+    expect(f.calls[1].params.rich_message.html).toContain(
+      "<footer>Codex Worked 12s · 0.3k · session 1.3k</footer>",
+    );
+    await event("turn/completed", {
+      turn: { id: "current", durationMs: 12000 },
+    });
     expect(f.calls).toHaveLength(2);
-  } finally { f.done(); }
+  } finally {
+    f.done();
+  }
 });
 
 test("a queued final survives reconnect before first history recovery without stale token statistics", async () => {
   const f = engineFixture();
   let recovered: Engine | undefined;
-  const final = { id: "recover-final", type: "agentMessage", phase: "final_answer", text: "Recovered" };
+  const final = {
+    id: "recover-final",
+    type: "agentMessage",
+    phase: "final_answer",
+    text: "Recovered",
+  };
   try {
-    await f.e.event({ method: "turn/started", params: { threadId: "thread", turn: { id: "recover-turn", startedAt: 1700000000 } } });
-    await f.e.event({ method: "thread/tokenUsage/updated", params: { threadId: "thread", turnId: "recover-turn", tokenUsage: { total: { totalTokens: 1000 } } } });
-    await f.e.event({ method: "item/completed", params: { threadId: "thread", turnId: "recover-turn", item: final } });
+    await f.e.event({
+      method: "turn/started",
+      params: {
+        threadId: "thread",
+        turn: { id: "recover-turn", startedAt: 1700000000 },
+      },
+    });
+    await f.e.event({
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: "thread",
+        turnId: "recover-turn",
+        tokenUsage: { total: { totalTokens: 1000 } },
+      },
+    });
+    await f.e.event({
+      method: "item/completed",
+      params: { threadId: "thread", turnId: "recover-turn", item: final },
+    });
     expect(f.calls).toHaveLength(0);
-    const thread = { status: { type: "idle" }, turns: [{ id: "recover-turn", status: "completed", startedAt: 1700000000, durationMs: 1000, items: [final] }] };
+    const thread = {
+      status: { type: "idle" },
+      turns: [
+        {
+          id: "recover-turn",
+          status: "completed",
+          startedAt: 1700000000,
+          durationMs: 1000,
+          items: [final],
+        },
+      ],
+    };
     f.client.resume = async () => ({ thread });
     f.client.call = async () => ({ thread });
     recovered = new Engine(f.s, "test", f.client, f.e.sender);
     await recovered.attach();
     await recovered.recover();
     expect(f.calls).toHaveLength(1);
-    expect(f.calls[0].params.text).toBe("Recovered\n(Codex Worked 1s)");
+    expect(f.calls[0].params.text).toBe("Recovered\nCodex Worked 1s");
     await recovered.recover();
     expect(f.calls).toHaveLength(1);
-  } finally { recovered?.close(); f.done(); }
+  } finally {
+    recovered?.close();
+    f.done();
+  }
 });
 
 test("compaction lifecycle notices are quoted, timed and deduplicated across native and legacy events", async () => {
   const f = engineFixture();
   const item = (id: string) => ({ type: "contextCompaction", id });
-  const event = (method: string, value?: any) => f.e.event({ method, params: { threadId: "thread", turnId: "turn", item: value } });
+  const event = (method: string, value?: any) =>
+    f.e.event({
+      method,
+      params: { threadId: "thread", turnId: "turn", item: value },
+    });
   try {
     await event("item/started", item("compact"));
     const started = f.e.journal.get("compaction:compact").started;
@@ -149,17 +301,32 @@ test("compaction lifecycle notices are quoted, timed and deduplicated across nat
     await event("item/completed", item("compact"));
     expect(f.calls).toHaveLength(2);
     expect(f.calls[0].params.text).toBe("System\nContext compaction started.");
-    expect(f.calls[1].params.text).toMatch(/^System\nContext compacted\. \(1[2-3]s\)$/);
-    expect(f.calls.every(c => c.params.entities[0].type === "blockquote")).toBe(true);
+    expect(f.calls[1].params.text).toMatch(
+      /^System\nContext compacted\. \(1[2-3]s\)$/,
+    );
+    expect(
+      f.calls.every((c) => c.params.entities[0].type === "blockquote"),
+    ).toBe(true);
     await event("item/started", item("second"));
     await event("item/completed", item("second"));
     expect(f.calls).toHaveLength(4);
-  } finally { f.done(); }
+  } finally {
+    f.done();
+  }
 });
 
 test("recovery skips old compactions and never invents elapsed time for a missed completion", async () => {
   const f = engineFixture();
-  const event = (id: string) => f.e.event({ method: "item/completed", params: { threadId: "thread", turnId: "turn", recovered: true, item: { type: "contextCompaction", id } } });
+  const event = (id: string) =>
+    f.e.event({
+      method: "item/completed",
+      params: {
+        threadId: "thread",
+        turnId: "turn",
+        recovered: true,
+        item: { type: "contextCompaction", id },
+      },
+    });
   try {
     await event("old");
     expect(f.calls).toHaveLength(0);
@@ -168,28 +335,56 @@ test("recovery skips old compactions and never invents elapsed time for a missed
     expect(f.calls[0].params.text).toBe("System\nContext compacted.");
     await event("pending");
     expect(f.calls).toHaveLength(1);
-  } finally { f.done(); }
+  } finally {
+    f.done();
+  }
 });
 
 test("ambiguous compaction notices are not replayed under another lifecycle event", async () => {
   const f = engineFixture();
   let attempts = 0;
-  f.api.call = async () => { attempts++; throw Error("lost reply"); };
+  f.api.call = async () => {
+    attempts++;
+    throw Error("lost reply");
+  };
   try {
-    for (const method of ["thread/compacted", "item/completed", "thread/compacted"])
-      await f.e.event({ method, params: { threadId: "thread", turnId: "turn", item: { type: "contextCompaction", id: "compact" } } });
+    for (const method of [
+      "thread/compacted",
+      "item/completed",
+      "thread/compacted",
+    ])
+      await f.e.event({
+        method,
+        params: {
+          threadId: "thread",
+          turnId: "turn",
+          item: { type: "contextCompaction", id: "compact" },
+        },
+      });
     expect(attempts).toBe(1);
-  } finally { f.done(); }
+  } finally {
+    f.done();
+  }
 });
 
 test("background terminal query redacts credentials before Telegram delivery", async () => {
   const f = engineFixture();
-  f.client.call = async () => ({ data: [{ processId: "job", command: "curl -H Authorization: Bearer abcdefghijk" }], nextCursor: null });
+  f.client.call = async () => ({
+    data: [
+      {
+        processId: "job",
+        command: "curl -H Authorization: Bearer abcdefghijk",
+      },
+    ],
+    nextCursor: null,
+  });
   try {
     await f.e.receiveBatch([update(1, "/ps")]);
     expect(f.calls.at(-1).params.text).not.toContain("abcdefghijk");
     expect(f.calls.at(-1).params.text).toContain("[redacted]");
-  } finally { f.done(); }
+  } finally {
+    f.done();
+  }
 });
 
 test("dual native review result events never duplicate a confirmed or ambiguous final", async () => {
@@ -204,11 +399,26 @@ test("dual native review result events never duplicate a confirmed or ambiguous 
     };
     try {
       for (const item of [
-        { type: "agentMessage", id: "agent-final", text: "No review findings.", phase: null },
-        { type: "exitedReviewMode", id: "review-final", review: "No review findings." },
-      ]) await f.e.event({ method: "item/completed", params: { threadId: "thread", turnId: "review-turn", item } });
+        {
+          type: "agentMessage",
+          id: "agent-final",
+          text: "No review findings.",
+          phase: null,
+        },
+        {
+          type: "exitedReviewMode",
+          id: "review-final",
+          review: "No review findings.",
+        },
+      ])
+        await f.e.event({
+          method: "item/completed",
+          params: { threadId: "thread", turnId: "review-turn", item },
+        });
       expect(attempts).toBe(1);
-    } finally { f.done(); }
+    } finally {
+      f.done();
+    }
   }
 });
 
@@ -221,18 +431,29 @@ test("goal commands share the bound thread, preserve pause and usage, and never 
     if (method === "thread/goal/get") return { goal };
     expect(params.origin).toBe("user");
     if (method === "thread/goal/clear") {
-      const cleared = !!goal; goal = null; return { cleared };
+      const cleared = !!goal;
+      goal = null;
+      return { cleared };
     }
     expect(method).toBe("thread/goal/set");
-    goal = { tokensUsed: 123, tokenBudget: 1000, timeUsedSeconds: 12, ...goal, ...params };
+    goal = {
+      tokensUsed: 123,
+      tokenBudget: 1000,
+      timeUsedSeconds: 12,
+      ...goal,
+      ...params,
+    };
     return { goal };
   };
   try {
     for (const [id, text] of [
-      [1, "/goal"], [2, "/goal pause"],
-      [3, "/goal@fixture Fix this\n  then  test"], [4, "/goal pause"],
+      [1, "/goal"],
+      [2, "/goal pause"],
+      [3, "/goal@fixture Fix this\n  then  test"],
+      [4, "/goal pause"],
       [5, "/goal edit Revise this\n  carefully"],
-    ] as const) expect(await f.e.receiveBatch([update(id, text)])).toBe("handled");
+    ] as const)
+      expect(await f.e.receiveBatch([update(id, text)])).toBe("handled");
     expect(goal.objective).toBe("Revise this\n  carefully");
     expect(goal.status).toBe("paused");
     expect(goal.tokensUsed).toBe(123);
@@ -245,28 +466,39 @@ test("goal commands share the bound thread, preserve pause and usage, and never 
     await f.e.receiveBatch([update(8, "/goal clear")]);
     expect(goal).toBeNull();
     await f.e.receiveBatch([update(8, "/goal clear")]);
-    expect(f.rpc.filter(x => x.method === "thread/goal/clear")).toHaveLength(1);
-    expect(f.rpc.some(x => x.method.startsWith("turn/"))).toBe(false);
-  } finally { f.done(); }
+    expect(f.rpc.filter((x) => x.method === "thread/goal/clear")).toHaveLength(
+      1,
+    );
+    expect(f.rpc.some((x) => x.method.startsWith("turn/"))).toBe(false);
+  } finally {
+    f.done();
+  }
 });
 
 test("goal validation makes no mutation and accepts 4000 Unicode characters", async () => {
   const f = engineFixture();
   f.client.call = async (method: string, params: any) => {
     f.rpc.push({ method, params });
-    return { goal: method.endsWith("get") ? null : { ...params, tokensUsed: 0, timeUsedSeconds: 0 } };
+    return {
+      goal: method.endsWith("get")
+        ? null
+        : { ...params, tokensUsed: 0, timeUsedSeconds: 0 },
+    };
   };
   try {
     await f.e.receiveBatch([update(1, "/goal " + "😀".repeat(4001))]);
     expect(f.rpc).toHaveLength(0);
     await f.e.receiveBatch([update(2, "/goal edit A new objective")]);
-    expect(f.rpc.map(x => x.method)).toEqual(["thread/goal/get"]);
+    expect(f.rpc.map((x) => x.method)).toEqual(["thread/goal/get"]);
     await f.e.receiveBatch([update(3, "/goal " + "😀".repeat(4000))]);
     expect(f.rpc.at(-1).method).toBe("thread/goal/set");
-    const foreign = update(4, "/goal clear"); foreign.message.from.id = 99;
+    const foreign = update(4, "/goal clear");
+    foreign.message.from.id = 99;
     expect(await f.e.receiveBatch([foreign])).toBe("ignored");
-    expect(f.rpc.some(x => x.method.endsWith("clear"))).toBe(false);
-  } finally { f.done(); }
+    expect(f.rpc.some((x) => x.method.endsWith("clear"))).toBe(false);
+  } finally {
+    f.done();
+  }
 });
 
 test("ambiguous goal mutation and missing reply do not repeat a command", async () => {
@@ -278,26 +510,39 @@ test("ambiguous goal mutation and missing reply do not repeat a command", async 
       if (!lostReply) throw new DeliveryUnknown("test timeout");
       return { cleared: true };
     };
-    if (lostReply) f.api.call = async () => { throw Error("lost Telegram response"); };
+    if (lostReply)
+      f.api.call = async () => {
+        throw Error("lost Telegram response");
+      };
     try {
       const expected = lostReply ? "reply_unknown" : "unknown";
       expect(await f.e.receiveBatch([update(1, "/goal clear")])).toBe(expected);
       expect(await f.e.receiveBatch([update(1, "/goal clear")])).toBe(expected);
       expect(mutations).toBe(1);
-    } finally { f.done(); }
+    } finally {
+      f.done();
+    }
   }
 });
 
 test("unsupported or rejected native commands have calm notices and local diagnostics", async () => {
   for (const code of [-32601, -32602]) {
     const f = engineFixture();
-    f.client.call = async () => { throw new RpcError({ code, message: "INTERNAL test exception" }); };
+    f.client.call = async () => {
+      throw new RpcError({ code, message: "INTERNAL test exception" });
+    };
     try {
       expect(await f.e.receiveBatch([update(1, "/goal")])).toBe("rejected");
       expect(f.calls.at(-1).params.text).not.toContain("INTERNAL");
-      expect(f.calls.at(-1).params.text).toContain(code === -32601 ? "Update Codex" : "Could not retrieve");
-      expect(f.e.journal.status("in", "1").details.reason).toContain("INTERNAL");
-    } finally { f.done(); }
+      expect(f.calls.at(-1).params.text).toContain(
+        code === -32601 ? "Update Codex" : "Could not retrieve",
+      );
+      expect(f.e.journal.status("in", "1").details.reason).toContain(
+        "INTERNAL",
+      );
+    } finally {
+      f.done();
+    }
   }
 });
 
@@ -315,11 +560,16 @@ test("compact refuses active work; rename preserves text and both operate on the
     await f.e.receiveBatch([update(5, "/rename My  session")]);
     expect(f.rpc).toEqual([
       { method: "thread/compact/start", params: { threadId: "thread" } },
-      { method: "thread/name/set", params: { threadId: "thread", name: "My  session" } },
+      {
+        method: "thread/name/set",
+        params: { threadId: "thread", name: "My  session" },
+      },
     ]);
     await f.e.receiveBatch([update(5, "/rename My  session")]);
     expect(f.rpc).toHaveLength(2);
-  } finally { f.done(); }
+  } finally {
+    f.done();
+  }
 });
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "bridge-bun-"));
@@ -353,7 +603,7 @@ function mockApi() {
   const api = new Telegram("123456:fixture_token");
   const calls: any[] = [];
   api.call = async (method, params) => {
-    calls.push({ method, params });
+    calls.push({ method, params: telegramView(params) });
     return { chat: { id: 12 }, message_id: calls.length };
   };
   return { api, calls };
@@ -678,7 +928,7 @@ test("approval is one shot and cancellation respects offered choices", async () 
     messages: any[] = [];
   const i = new Interactions(
     { send: (x: any) => sent.push(x) } as any,
-    async (k, t) => messages.push(t),
+    async (_k, t) => messages.push(t),
     String,
   );
   await i.request({
@@ -885,7 +1135,7 @@ test("multipart sends record all receipts and never replay after ambiguous parti
   };
   try {
     const options = {
-      text: "```ts\n" + "😀x\n".repeat(3000) + "```",
+      text: "```ts\n" + "😀x\n".repeat(18000) + "```",
       reply_to: 42,
     };
     const result = await sender.send("partial", options);
@@ -911,7 +1161,7 @@ test("successful multipart sends expose all message IDs and suppress identical a
   const f = engineFixture();
   try {
     f.e.started("long-turn");
-    const text = "**" + "😀".repeat(5000) + "**";
+    const text = "**" + "😀".repeat(40000) + "**";
     const result = await f.e.sender.send("long-explicit", { text });
     expect(result.status).toBe("sent");
     expect(result.details.message_ids).toHaveLength(3);
@@ -931,7 +1181,7 @@ test("successful multipart sends expose all message IDs and suppress identical a
     });
     expect(f.calls).toHaveLength(3);
     for (const call of f.calls) {
-      expect(call.params.text.length).toBeLessThanOrEqual(4096);
+      expect(call.params.text.length).toBeLessThanOrEqual(32768);
       expect(call.params.text).not.toContain("[CODEX");
       expect(call.params.entities[0].type).toBe("bold");
     }
@@ -969,7 +1219,7 @@ test("oversized formatted edits and captions fail before network calls", async (
     sender = new Sender(f.s, "test", api);
   try {
     await expect(
-      sender.send("large-edit", { text: "x".repeat(4097), edit_id: 1 }),
+      sender.send("large-edit", { text: "x".repeat(32769), edit_id: 1 }),
     ).rejects.toThrow("Edited message exceeds");
     const file = join(f.p, "outgoing", "sample.txt");
     writeFileSync(file, "sample");
@@ -1119,9 +1369,7 @@ test("task timing uses server timestamps and survives completion before final fo
         },
       },
     });
-    expect(f.calls[0].params.text).toMatch(
-      /^Checking\n\(Codex Working 1m \d+s\)$/,
-    );
+    expect(f.calls[0].params.text).toMatch(/^Checking\nCodex Working 1m \d+s$/);
     recordTurnTiming(f.e.journal, { id: "timed" }, true);
     expect(f.e.journal.get("turn_timing:timed").started_at).toBe(
       startedAt * 1000,
@@ -1152,7 +1400,7 @@ test("task timing uses server timestamps and survives completion before final fo
         },
       },
     });
-    expect(f.calls[1].params.text).toBe("Done\n(Codex Worked 2m 5s)");
+    expect(f.calls[1].params.text).toBe("Done\nCodex Worked 2m 5s");
     const reopened = new Journal(f.p);
     try {
       expect(elapsedSeconds(reopened, "timed")).toBe(125);
@@ -1188,9 +1436,7 @@ test("attaching to an existing task restores its clock for direct progress messa
       text: "Progress",
       source: "working",
     });
-    expect(f.calls[0].params.text).toMatch(
-      /^Progress\n\(Codex Working \d+s\)$/,
-    );
+    expect(f.calls[0].params.text).toMatch(/^Progress\nCodex Working \d+s$/);
     expect(
       (
         await f.e.sender.send("timed-direct", {
@@ -1222,6 +1468,212 @@ test("unlabelled messages and captions use the full Telegram limits", async () =
     expect(calls).toHaveLength(2);
   } finally {
     sender.journal.close();
+    f.done();
+  }
+});
+
+test("async choice questions are forwarded before turn completion and answered through the bound session", async () => {
+  const f = engineFixture();
+  try {
+    await f.e.event({
+      method: "turn/started",
+      params: { threadId: "thread", turn: { id: "turn" } },
+    });
+    await f.e.event({
+      method: "item/completed",
+      params: {
+        threadId: "thread",
+        turnId: "turn",
+        item: {
+          id: "async-choice",
+          type: "agentMessage",
+          phase: "final_answer",
+          text: "",
+          questions: [{ title: "Which layout?", options: ["One", "Two"] }],
+        },
+      },
+    });
+    expect(f.calls).toHaveLength(1);
+    const text = f.calls[0].params.text;
+    expect(text).toContain("One");
+    expect(text).toContain("Two");
+    const code = /aq-[a-f0-9]+/.exec(text)![0];
+    expect(f.e.journal.get("pending_final:turn", [])).toEqual([]);
+    await f.e.command("answer-async", `/answer ${code} 1 2`);
+    expect(f.rpc.at(-1).method).toBe("turn/steer");
+    expect(f.rpc.at(-1).params.threadId).toBe("thread");
+    expect(f.rpc.at(-1).params.expectedTurnId).toBe("turn");
+    expect(f.rpc.at(-1).params.input[0].text).toContain('"answer":"Two"');
+  } finally {
+    f.done();
+  }
+});
+
+test("compaction timer edits the confirmed start message and stops on completion", async () => {
+  const f = engineFixture();
+  try {
+    await f.e.event({
+      method: "item/started",
+      params: {
+        threadId: "thread",
+        turnId: "turn",
+        item: { type: "contextCompaction", id: "timer" },
+      },
+    });
+    const timer = f.e.journal.get("compaction_timer");
+    f.e.journal.put("compaction_timer", {
+      ...timer,
+      next: timer.started + 1000,
+    });
+    await f.e.refreshCompaction(timer.started + 3000);
+    expect(f.calls.at(-1).method).toBe("editMessageText");
+    expect(f.calls.at(-1).params.message_id).toBe(timer.message);
+    expect(f.calls.at(-1).params.text).toBe("System\nCompacting context… (3s)");
+    expect(f.calls.at(-1).params.entities[0].type).toBe("blockquote");
+    const count = f.calls.length;
+    await f.e.refreshCompaction(timer.started + 3001);
+    expect(f.calls).toHaveLength(count);
+    await f.e.event({
+      method: "item/completed",
+      params: {
+        threadId: "thread",
+        turnId: "turn",
+        item: { type: "contextCompaction", id: "timer" },
+      },
+    });
+    f.e.journal.put("working_edit_after", 0);
+    await f.e.refreshCompaction(timer.started + 16000);
+    expect(f.calls.at(-1).params.text).toContain("Context compacted.");
+    expect(f.e.journal.get("compaction_timer")).toBeNull();
+    const finalCount = f.calls.length;
+    await f.e.refreshCompaction(timer.started + 17000);
+    expect(f.calls).toHaveLength(finalCount);
+  } finally {
+    f.done();
+  }
+});
+
+test("questions command is a local query with copyable IDs and answer commands; status follows external answers", async () => {
+  const f = engineFixture();
+  try {
+    await f.e.questions.offer(
+      {
+        id: "copyable",
+        questions: [
+          { title: "Choose layout", options: ["One", "Two"] },
+          { title: "Keep tools?", options: ["Yes", "No"] },
+        ],
+      },
+      "turn",
+    );
+    f.client.call = async () => {
+      throw Error("Questions query must not call Codex");
+    };
+    await f.e.command("list-questions", "/questions");
+    const prompt = f.calls.at(-1).params;
+    expect(prompt.rich_message.html).toContain(
+      '<tg-button type="copy_text" text="aq-',
+    );
+    expect(prompt.rich_message.html).toContain(
+      '<tg-button type="copy_text" text="/answer aq-',
+    );
+    expect(prompt.text).toContain("Choose layout");
+    f.e.questions.resolveInput({
+      type: "userMessage",
+      content: [
+        {
+          type: "text",
+          text:
+            "<send_user_message_question_reply>\n" +
+            JSON.stringify([
+              {
+                questionItemId: JSON.stringify([
+                  "request_user_input_async",
+                  "copyable",
+                  0,
+                ]),
+                answer: "One",
+              },
+            ]) +
+            "\n</send_user_message_question_reply>",
+        },
+      ],
+    });
+    expect(f.e.questions.list()).not.toContain("Choose layout");
+    expect(f.e.questions.list()).toContain("Keep tools");
+  } finally {
+    f.done();
+  }
+});
+
+test("goal and pending input status comes from events and excludes already answered fields", async () => {
+  const f = engineFixture();
+  try {
+    const { statusline } = await import("../bun/statusline");
+    await f.e.event({
+      method: "thread/goal/updated",
+      params: { threadId: "thread", goal: { status: "paused" } },
+    });
+    expect(statusline(f.e.journal, "thread").goal).toBe("paused");
+    await f.e.questions.offer(
+      {
+        id: "pending-status",
+        questions: [
+          { title: "First", options: [] },
+          { title: "Second", options: [] },
+        ],
+      },
+      "turn",
+    );
+    expect(statusline(f.e.journal, "thread").questions).toBe(2);
+    const code = "aq-" + hash("thread" + "pending-status").slice(0, 8);
+    await f.e.questions.answer(`${code} 1 yes`, "turn");
+    expect(statusline(f.e.journal, "thread").questions).toBe(1);
+    f.e.interactions.pending.set("blocking", {
+      method: "item/tool/requestUserInput",
+      answers: {},
+      params: {
+        questions: [
+          { id: "live", question: "Live choice", options: [{ label: "A" }] },
+        ],
+      },
+    });
+    f.e.syncQuestionStatus();
+    expect(statusline(f.e.journal, "thread").questions).toBe(2);
+    await f.e.event({
+      method: "thread/goal/cleared",
+      params: { threadId: "thread" },
+    });
+    expect(statusline(f.e.journal, "thread").goal).toBeUndefined();
+  } finally {
+    f.done();
+  }
+});
+
+test("statusline follows model settings events and ignores foreign threads", async () => {
+  const { statusline } = await import("../bun/statusline");
+  const f = engineFixture();
+  try {
+    await f.e.event({
+      method: "thread/settings/updated",
+      params: {
+        threadId: "thread",
+        threadSettings: { model: "gpt-test", effort: "high" },
+      },
+    });
+    expect(statusline(f.e.journal, "thread")).toMatchObject({
+      model: "gpt-test",
+      effort: "high",
+    });
+    await f.e.event({
+      method: "thread/settings/updated",
+      params: {
+        threadId: "foreign",
+        threadSettings: { model: "other", effort: "low" },
+      },
+    });
+    expect(statusline(f.e.journal, "thread").model).toBe("gpt-test");
+  } finally {
     f.done();
   }
 });

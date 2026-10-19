@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { AppServer } from "../bun/appserver";
 import { Store } from "../bun/state";
 import { Telegram, Sender } from "../bun/telegram";
+import { telegramView } from "../tests-bun/telegram-view";
 import { Engine } from "../bun/engine";
 
 const root = mkdtempSync(join(tmpdir(), "telegram-telemetry-probe-"));
@@ -22,7 +23,7 @@ try {
   const store = new Store(join(root, "state"));
   store.configure("test", "123456:fixture", { id: 123456, username: "fixture" }, 12, threadId!);
   const api = new Telegram("123456:fixture");
-  api.call = async (method, params) => { sent.push({ method, params }); return { message_id: sent.length, chat: { id: 12 } }; };
+  api.call = async (method, params) => { sent.push({ method, params: telegramView(params) }); return { message_id: sent.length, chat: { id: 12 } }; };
   sender = new Sender(store, "test", api);
   engine = new Engine(store, "test", client, sender);
   await engine.attach();

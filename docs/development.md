@@ -186,10 +186,14 @@ Each shared tool takes `instance`. Tools accept `format=plain` for literal text 
 `phase=commentary` for an explicit progress update. Public commentary and final
 answers are also forwarded; identical explicit text suppresses duplicate forwarding.
 
-`bun/format.ts` uses Marked tokens to produce text plus Bot API `entities` or
-`caption_entities`. It never sends `parse_mode`. System notices are native quotes with a bold `System` heading inside each part;
-Codex messages have no added headings. Progress and final text end with
-`(Codex Working …)` and `(Codex Worked …)` respectively. Elapsed time uses persisted
+`bun/rich.ts` renders safe, allowlisted Rich Message HTML. New text sends use
+`sendRichMessage`; edits use `editMessageText` with `rich_message`. Rich Messages
+preserve native headings, dividers, tables (up to 20 columns), lists, and nested
+quotes. Model-authored HTML stays literal and links are scheme-checked. Plain
+messages and oversized bodies use balanced entity-to-HTML rendering; attachment
+captions retain ordinary `caption_entities` and their separate size limit.
+System notices are quotes with a bold System heading. Codex adds no heading;
+its statusline uses a native footer. Elapsed time uses persisted
 server turn timestamps; no duration is shown when timing is unavailable. Footers
 also include reported token counts. `thread/tokenUsage/updated` cumulative totals
 are differenced against the observed preceding turn's total; `last` is one model
@@ -216,15 +220,64 @@ tool sends and progress use the latest reported usage available when sent.
 Before an active turn's first usage update, progress may show the last known
 session checkpoint alone. It never presents zero as measured turn usage; a
 connection gap invalidates that checkpoint as usual.
-Footers appear in italic only on the final part of a split message, outside quoted content.
-Offsets and lengths use
-UTF-16 units. Markdown quotes use native `blockquote` entities and retain inline
-formatting. Nested quote levels are flattened into the outer quote. Incompatible
-nested styles are removed or split; unsupported markup stays readable. Formatting is limited to 90 entities per message.
+Footers appear only on the final part of a split message, outside quoted content.
+Context uses the latest request's `last.totalTokens` and `modelContextWindow`,
+independent of cumulative session counts. `ctx USEDk/WINDOWk PERCENT%` follows
+CLI 0.163's percentage calculation (12k baseline discounted), clamps to 0–100,
+and is omitted when the window or last usage is unavailable. Compaction may
+reduce context size without reducing cumulative usage. Reconnect generation
+guards also apply to context snapshots.
 
-Render before splitting. Prefer line boundaries, preserve surrogate pairs, and
-clip entities into each part. Edits must fit 4096 UTF-16 units and captions 1024,
-including any timing footer; oversized edits and captions fail before sending.
+Both Working and Worked statuslines use native `<footer>` blocks. Goal status
+comes from an initial `thread/goal/get`, goal update/clear notifications and
+successful goal commands. Pending question counts include unanswered async/form
+fields and live blocking input requests. Absent goals and zero counts are omitted.
+`/questions` returns the pending inventory without model work; request IDs and
+complete answer commands use native copy-text buttons. Cross-client question replies resolve
+only their matching source-item/question-index identities.
+The worker renders tool activity and the Working footer together and edits the
+latest progress message immediately when tool content changes; footer-only changes
+refresh every 10 seconds. A newly arrived
+progress message retires earlier Working footers immediately. Tool items are anchored
+to the message present when they start; completion edits that same message even
+after newer progress arrives. The original final message part and
+its body entities are retained, so multipart boundaries and body formatting stay
+unchanged. Retired progress messages receive tool changes without a Working footer;
+final answers are not refreshed. Completed
+turns, manual edits, pairing/binding changes and paused instances stop updates.
+Each Working tail retains its original body and entities. On completion all known
+tails for that turn are queued for edits that remove only their footers. Cleanup
+runs independently of counter refreshes, at most once per second while the finite
+cleanup queue drains. It survives reconnects, honors shared 429 retry_after, and
+never edits final answers or deletes messages. Ambiguous cleanup is not replayed;
+manual edits opt that message out of cleanup.
+Reported tokens advance on Codex usage events; elapsed time can advance between
+events. Reconnect gaps retain existing counters until a fresh snapshot arrives.
+Each edit reserves its own durable receipt before sending. Unknown counter versions are never replayed. A strictly newer rendered version
+may replace the same confirmed message; this does not create a new message.
+Terminal edit rejections suspend that target. Known 429 responses honor retry_after
+across later progress messages, and not-modified responses are harmless. Refresh
+failures stay in local diagnostics. Oversized edits stop instead of truncating the
+body. The 10-second interval is a minimum between periodic refresh requests; network delay and
+Telegram backoff can make it longer.
+
+Rich Message text is capped at 32,768 characters; the implementation uses the
+stricter UTF-16 length when splitting to preserve surrogate pairs. A conservative
+block budget keeps generated HTML below 500 blocks; native rendering bounds
+nesting below 16 levels. Very large structures fall back to readable balanced
+chunks rather than dropping text. Captions remain limited to 1024 UTF-16 units.
+Oversized edits and captions fail before network I/O. Native body HTML is saved
+with working targets so counter edits and footer cleanup retain body formatting.
+Raw and v1 presentation receipts are recognized before v2 Rich Message receipts;
+upgrading never replays a confirmed, rejected, or ambiguous send.
+
+All text sends and edits share Telegram's flood-control deadline. A 429
+response updates the shared deadline without shortening an existing wait; new
+sends are journaled in a deferred outbox instead of calling Telegram during the
+wait. After the deadline, known rejections retry under durable attempt IDs and
+update the original request receipt. Ambiguous and partially delivered requests
+are never retried. Binding changes discard deferred deliveries to the old owner.
+Typing indicators also pause during flood control.
 
 Reserve receipts before network I/O. Multipart sends also journal each part and
 return `message_ids`; single sends return `message_id`. Partial or ambiguous sends
@@ -235,7 +288,9 @@ outcome. Recognize legacy fingerprints and chunk boundaries during recovery.
 
 Live `contextCompaction` item starts and completions produce quoted system notices.
 Start times and notice reservations persist; confirmed completion can include
-elapsed time. Deprecated `thread/compacted` notifications share the completion
+elapsed time. The confirmed start notice is edited with a running timer using
+the same 10-second request budget and 429 backoff as progress edits. Completion
+stops the timer and replaces its running text. Deprecated `thread/compacted` notifications share the completion
 reservation. Recovered historical compactions stay silent; a previously observed
 start can receive its missed completion notice without inventing a finish time.
 Repeated events and ambiguous delivery are never retried under another event ID.
@@ -284,3 +339,53 @@ some may run a model turn. Telegram is stubbed; they send no Telegram messages.
 - `scripts/probe-first-load.ts` — first installation and reload of a disposable session.
 - `scripts/probe-channel.ts`, `scripts/probe-channel-migration.ts` — shared plugin behavior.
 - `scripts/probe-mcp-lifecycle.ts`, `scripts/probe-mcp-plugin.ts` — legacy lifecycle behavior.
+
+
+Tool activity (`bun/activity.ts`) observes live tool item lifecycle events and
+retains all structural summaries alongside the live Working footer. Tool ownership is fixed at item start, including across steered inputs. If no progress exists yet it creates one temporary
+status message. There is no fixed item or action count limit. Long histories
+continue in tracked messages within Telegram's length limit; continuation sends
+never take over the current counter. They share the Telegram backoff and transient
+cleanup. Tool summaries use monospace throughout, including bold group labels and explicit HTML line breaks, omit blank lines between tool groups, and leave
+no extra blank line before the Working footer. A single worker refresh renders
+activity and counters together. Historical
+recovery and reasoning are excluded. Consecutive reads, searches and file lists
+are grouped as Explored/Exploring. Search details are bounded and redacted; paths
+use basenames only. Commands show an allowlisted executable and bounded safe arguments
+(e.g. bun run typecheck or tail -8 checks.log). Script bodies, environment
+values, credential flags, quoted free text and additional shell commands are omitted. Arbitrary output remains hidden; the exact compiler invocation
+`$ tsc --noEmit` can be shown for typecheck scripts. A normal nonzero shell exit does not
+produce a warning. Telegram delivery tools are excluded. `/activity` configures
+`transient` (default, delete on completion), `keep`, or `off` without invoking the
+model. Tool-content changes update immediately in the next worker cycle, including the footer
+in the same edit. Footer-only refreshes use a 10-second interval; all requests
+honor the shared 429 backoff. Unknown or interrupted activity sends are not replayed. Transient
+activity deletion uses the same durable cleanup queue as Working footer removal;
+normal progress messages are edited to remove the footer, never deleted.
+
+
+`bun/questions.ts` forwards asynchronous `agentMessage.questions` as soon as the
+item completes, before normal final-message buffering. Active-turn recovery finds
+missed questions without replaying deliveries. Codes and answer state are durable.
+`/answer` turns async answers into an idempotently identified follow-up input via
+turn/steer (or turn/start when idle); these questions are not JSON-RPC requests. Answers use Codex CLI 0.163's
+`send_user_message_question_reply` envelope, with a JSON-encoded tool name, source
+item ID, and zero-based question index, so the CLI can resolve each pending entry.
+MCP form elicitations use their real server request IDs and typed structured
+content instead. Single-choice enums, strings, booleans and numbers are supported;
+unsupported and sensitive fields stay in Codex CLI. `/deny` declines forms.
+Submitted or ambiguous answers are not replayed. Questions remain separate from
+transient activity and survive its cleanup.
+
+Queued Working commentary expires after one minute or when its turn ends, so recovery
+does not deliver stale progress notices. Final replies retain durable deferred delivery.
+
+Original inline code of 1–256 UTF-16 units becomes a native copy-text button
+whose label and copied value are the original text. Blank-only or longer snippets
+remain code; fenced code blocks and generated tool summaries retain monospace formatting.
+Raw model-authored HTML remains escaped.
+
+The footer shows the configured thread model and reasoning effort from resume/read
+snapshots and thread/settings/updated notifications. Unknown settings are omitted.
+Goal completion uses “Goal achieved”. Nonzero command exit codes replace the tool heading with “Failed (exit N) COMMAND”,
+followed by “(no output)” when appropriate, without a system warning.

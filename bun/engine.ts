@@ -1,12 +1,20 @@
+import { Questions } from "./questions";
+import { Activity } from "./activity";
 import { join } from "node:path";
 import { DeliveryUnknown, RpcError, type Client } from "./appserver";
 import { Store, Journal, hash, legacyJSON } from "./state";
 import { Sender, Telegram } from "./telegram";
 import { Interactions } from "./interactions";
-import type { MessageSource } from "./format";
+import type { MessageSource, TextFormat } from "./format";
 import { recordTurnTiming, durationText } from "./timing";
 import { reconnectUsage, startUsage, recordUsage } from "./usage";
-import { HELP, QUERY_METHODS, commandHelp, nativeCommand, parseCommand } from "./commands";
+import {
+  HELP,
+  QUERY_METHODS,
+  commandHelp,
+  nativeCommand,
+  parseCommand,
+} from "./commands";
 export { HELP } from "./commands";
 export function diagnostic(v: any, token = "", limit: number | null = 1600) {
   let text = typeof v === "string" ? v : legacyJSON(v);
@@ -93,20 +101,39 @@ export class Engine {
   activeTurn: string | null = null;
   status = "connecting";
   interactions: Interactions;
+  activity: Activity;
+  questions: Questions;
   constructor(
     readonly store: Store,
     readonly instance: string,
     readonly client: Client,
     readonly sender: Sender,
   ) {
+    this.activity = new Activity(store, instance, sender);
     this.config = store.read(instance);
     this.journal = new Journal(store.instance(instance));
     this.thread = this.config.thread_id;
+    this.questions = new Questions(
+      this.journal,
+      client,
+      this.thread,
+      (k, t) => this.say(k, t, "system", undefined, "markdown"),
+      (v) => diagnostic(v, store.token(instance), null),
+    );
     this.interactions = new Interactions(
       client,
       (k, t) => this.say(k, t),
       (v) => diagnostic(v, store.token(instance), null),
     );
+  }
+  recordModel(settings: any) {
+    const model = settings?.model;
+    if (typeof model === "string" && model)
+      this.journal.put("model_state", {
+        thread: this.thread,
+        model,
+        effort: settings.effort ?? settings.reasoningEffort ?? "default",
+      });
   }
   waitingForHistory = false;
   usageAttached = false;
@@ -137,11 +164,23 @@ export class Engine {
       if (result.thread.status?.type !== "idle") throw e;
       this.waitingForHistory = true;
     }
+    this.recordModel({ ...result.thread, ...result });
     if (this.config.session_settings)
       await this.client.call("thread/settings/update", {
         ...this.config.session_settings,
         threadId: this.thread,
       });
+    try {
+      const { goal } = await this.client.call("thread/goal/get", {
+        threadId: this.thread,
+      });
+      this.journal.put(
+        "goal_state",
+        goal ? { ...goal, thread: this.thread } : null,
+      );
+    } catch {
+      this.journal.put("goal_state", null);
+    }
     this.status = result.thread.status?.type ?? "unknown";
     let turns = result.thread.turns ?? [];
     if (this.status === "active" && !turns.length)
@@ -168,7 +207,8 @@ export class Engine {
     ).thread;
     const initialized = this.journal.get("history_initialized", false);
     for (const turn of t.turns ?? []) {
-      const observed = this.journal.get("pending_final:" + turn.id, []).length ||
+      const observed =
+        this.journal.get("pending_final:" + turn.id, []).length ||
         this.journal.get("compaction_turn:" + turn.id);
       if (!initialized && turn.status !== "inProgress" && !observed) {
         this.journal.put("historical_turn:" + turn.id, true);
@@ -177,6 +217,9 @@ export class Engine {
       if (this.journal.get("historical_turn:" + turn.id)) continue;
       recordTurnTiming(this.journal, turn);
       if (turn.status === "inProgress") {
+        for (const item of turn.items ?? [])
+          if (item.type === "agentMessage" && item.questions?.length)
+            await this.questions.offer(item, turn.id);
         if (!initialized)
           for (const item of (turn.items ?? []).slice(0, -1))
             if (item.type === "agentMessage")
@@ -186,7 +229,12 @@ export class Engine {
       for (const item of turn.items ?? [])
         await this.event({
           method: "item/completed",
-          params: { threadId: this.thread, turnId: turn.id, item, recovered: true },
+          params: {
+            threadId: this.thread,
+            turnId: turn.id,
+            item,
+            recovered: true,
+          },
         });
       await this.event({
         method: "turn/completed",
@@ -200,6 +248,7 @@ export class Engine {
     text: string,
     source: MessageSource = "system",
     turnId?: string,
+    format?: TextFormat,
   ): Promise<any> {
     const base = `bridge-${hash(key).slice(0, 40)}`;
     const legacy = chunks(text);
@@ -228,7 +277,12 @@ export class Engine {
       }
       return { status: "sent" };
     }
-    return this.sender.send(base + "-0", { text, source, turn_id: turnId });
+    return this.sender.send(base + "-0", {
+      text,
+      source,
+      turn_id: turnId,
+      format,
+    });
   }
   async receiveBatch(updates: any[]) {
     this.config = this.store.read(this.instance);
@@ -262,7 +316,9 @@ export class Engine {
     let submitting = false;
     try {
       if (text.startsWith("/")) {
-        const reply = await this.command(key, text, () => { submitting = true; });
+        const reply = await this.command(key, text, () => {
+          submitting = true;
+        });
         const status =
           reply.status === "sent" ? "handled" : "reply_" + reply.status;
         this.journal.finish("in", key, status, { reply });
@@ -315,7 +371,8 @@ export class Engine {
       return "accepted";
     } catch (e) {
       if (
-        (e instanceof DeliveryUnknown && (!text.startsWith("/") || submitting)) ||
+        (e instanceof DeliveryUnknown &&
+          (!text.startsWith("/") || submitting)) ||
         (submitting && !(e instanceof RpcError))
       ) {
         await this.say(
@@ -357,17 +414,61 @@ export class Engine {
     const client: Client = {
       call: (method, params) => {
         if (!QUERY_METHODS.has(method)) submitting?.();
-        return this.client.call(method, params);
+        return this.client.call(method, params).then((result) => {
+          if (method === "thread/read") this.recordModel(result.thread);
+          if (["thread/goal/get", "thread/goal/set"].includes(method))
+            this.journal.put(
+              "goal_state",
+              result.goal ? { ...result.goal, thread: this.thread } : null,
+            );
+          if (method === "thread/goal/clear" && result.cleared)
+            this.journal.put("goal_state", null);
+          return result;
+        });
       },
-      resume: (thread, options) => this.client.resume(thread, options),
-      send: (message) => { submitting?.(); this.client.send(message); },
+      resume: (thread, options) =>
+        this.client.resume(thread, options).then((result) => {
+          this.recordModel({ ...result.thread, ...result });
+          return result;
+        }),
+      send: (message) => {
+        submitting?.();
+        this.client.send(message);
+      },
     };
     let reply;
-    if (["/approve", "/deny", "/answer"].includes(cmd)) {
+    if (cmd === "/deny" && this.questions.has(args.trim())) {
+      submitting?.();
+      reply = this.questions.decline(args.trim());
+    } else if (cmd === "/answer" && this.questions.has(args.split(/\s/)[0])) {
+      submitting?.();
+      reply = await this.questions.answer(args, this.activeTurn);
+    } else if (["/approve", "/deny", "/answer"].includes(cmd)) {
       submitting?.();
       reply = this.interactions.respond(cmd, args);
-    }
-    else if (cmd === "/help") reply = commandHelp(args);
+    } else if (cmd === "/questions") {
+      const pending = this.questions.list(),
+        blocking = this.blockingQuestions();
+      return this.say(
+        "command-" + key,
+        diagnostic(
+          (pending === "No unanswered questions." && blocking ? "" : pending) +
+            blocking,
+          this.store.token(this.instance),
+          null,
+        ),
+        "system",
+        undefined,
+        "markdown",
+      );
+    } else if (cmd === "/activity") {
+      if (!args)
+        reply = `Tool activity: ${this.activity.mode()}\n/activity transient | keep | off`;
+      else if (["transient", "keep", "off"].includes(args)) {
+        this.activity.setMode(args as "transient" | "keep" | "off");
+        reply = `Tool activity: ${args}`;
+      } else reply = commandHelp("activity");
+    } else if (cmd === "/help") reply = commandHelp(args);
     else if (cmd === "/start") reply = HELP;
     else if (["/status", "/health", "/ping"].includes(cmd)) {
       const t = (
@@ -389,12 +490,53 @@ export class Engine {
       } else reply = "No active turn.";
     } else
       reply =
-        (await nativeCommand(client, this.thread, cmd, args, !!this.activeTurn, {
-          started: (turn) => this.started(turn.id, turn),
-          requestId: `telegram-${this.config.bot_id}-${key}`,
-        })) ??
-        "Unknown command.\n" + HELP;
-    return await this.say("command-" + key, diagnostic(reply, this.store.token(this.instance), null));
+        (await nativeCommand(
+          client,
+          this.thread,
+          cmd,
+          args,
+          !!this.activeTurn,
+          {
+            started: (turn) => this.started(turn.id, turn),
+            requestId: `telegram-${this.config.bot_id}-${key}`,
+          },
+        )) ?? "Unknown command.\n" + HELP;
+    return await this.say(
+      "command-" + key,
+      diagnostic(reply, this.store.token(this.instance), null),
+    );
+  }
+  syncQuestionStatus() {
+    const count = [...this.interactions.pending.values()]
+      .filter((r) => !r.submitted && r.method === "item/tool/requestUserInput")
+      .reduce(
+        (sum, r) =>
+          sum +
+          r.params.questions.filter((q: any) => !Object.hasOwn(r.answers, q.id))
+            .length,
+        0,
+      );
+    if (this.journal.get("blocking_question_count", 0) !== count)
+      this.journal.put("blocking_question_count", count);
+  }
+  blockingQuestions() {
+    const literal = (text: unknown) =>
+      String(text).replace(/([\\`*_{}\[\]()#+.!>|~-])/g, "\\$1");
+    const lines: string[] = [];
+    for (const [code, r] of this.interactions.pending)
+      if (!r.submitted && r.method === "item/tool/requestUserInput")
+        r.params.questions.forEach((q: any, i: number) => {
+          if (Object.hasOwn(r.answers, q.id)) return;
+          lines.push(`\`${code}\` · ${i + 1}. ${literal(q.question)}`);
+          if (q.isSecret) lines.push("Sensitive input: answer in Codex CLI.");
+          else {
+            (q.options ?? []).forEach((o: any, n: number) =>
+              lines.push(`${n + 1}) ${literal(o.label)}`),
+            );
+            lines.push(`\`/answer ${code} ${i + 1} ANSWER\``);
+          }
+        });
+    return lines.length ? "\n\n" + lines.join("\n") : "";
   }
   async event(event: any) {
     const m = event.method,
@@ -404,17 +546,49 @@ export class Engine {
       return;
     }
     if (p.threadId !== this.thread) return;
+    if (m === "thread/settings/updated") {
+      this.recordModel(p.threadSettings);
+      return;
+    }
+    if (m === "thread/goal/updated") {
+      this.journal.put("goal_state", { ...p.goal, thread: this.thread });
+      return;
+    }
+    if (m === "thread/goal/cleared") {
+      this.journal.put("goal_state", null);
+      return;
+    }
     if (m === "serverRequest/resolved") {
       this.interactions.resolve(p.requestId);
+      this.questions.resolve(p.requestId);
+      return;
+    }
+    if ("id" in event && m === "mcpServer/elicitation/request") {
+      await this.questions.form(event);
       return;
     }
     if ("id" in event && (await this.interactions.request(event))) return;
     if (this.journal.get("historical_turn:" + (p.turnId ?? ""))) return;
+    if (["item/started", "item/completed"].includes(m) && !p.recovered)
+      this.activity.observe(p.turnId, p.item, m === "item/completed");
+    if (m === "item/completed") this.questions.resolveInput(p.item);
     if (m === "turn/started") this.started(p.turn.id, p.turn);
-    else if (m === "thread/tokenUsage/updated") recordUsage(this.journal, this.thread, p.turnId, p.tokenUsage);
+    else if (m === "thread/tokenUsage/updated")
+      recordUsage(this.journal, this.thread, p.turnId, p.tokenUsage);
     else if (m === "turn/completed") {
       recordTurnTiming(this.journal, p.turn);
+      // Publish final tool completion before clearing the active turn/targets.
+      if (p.turn.id === this.journal.get("active_turn"))
+        await this.sender
+          .refreshWorking(Date.now(), true)
+          .catch((error) =>
+            console.error(
+              diagnostic(String(error), this.store.token(this.instance)),
+            ),
+          );
       this.journal.put("completed_turn:" + p.turn.id, true);
+      this.activity.finish(p.turn.id);
+      this.sender.finishWorking(p.turn.id);
       this.interactions.expire(p.turn.id);
       if (p.turn.id === this.activeTurn) {
         this.activeTurn = null;
@@ -422,7 +596,11 @@ export class Engine {
         this.journal.put("active_turn", null);
       }
       const pending = this.journal.get("pending_final:" + p.turn.id, []);
-      for (const item of pending) await this.event({ method: "item/completed", params: { threadId: this.thread, turnId: p.turn.id, item } });
+      for (const item of pending)
+        await this.event({
+          method: "item/completed",
+          params: { threadId: this.thread, turnId: p.turn.id, item },
+        });
       if (pending.length) this.journal.put("pending_final:" + p.turn.id, []);
       if (p.turn.error)
         await this.say(
@@ -430,8 +608,16 @@ export class Engine {
           "⚠️ Turn failed:\n" +
             diagnostic(p.turn.error, this.store.token(this.instance)),
         );
-    } else if ((m === "item/started" || m === "item/completed") && p.item?.type === "contextCompaction")
-      await this.compaction(p.turnId, p.item.id, m === "item/completed", !p.recovered);
+    } else if (
+      (m === "item/started" || m === "item/completed") &&
+      p.item?.type === "contextCompaction"
+    )
+      await this.compaction(
+        p.turnId,
+        p.item.id,
+        m === "item/completed",
+        !p.recovered,
+      );
     else if (m === "thread/compacted")
       await this.compaction(p.turnId, undefined, true);
     else if (m === "error")
@@ -442,6 +628,10 @@ export class Engine {
       );
     else if (m === "item/completed") {
       const item = p.item;
+      if (item?.type === "agentMessage" && item.questions?.length) {
+        if (!p.recovered) await this.questions.offer(item, p.turnId);
+        return;
+      }
       let failure: any;
       if (
         item.type === "commandExecution" &&
@@ -465,8 +655,12 @@ export class Engine {
           detail: diagnostic(failure, this.store.token(this.instance)),
           updated: Date.now() / 1000,
         });
-      const publicText = item.type === "agentMessage" ? item.text :
-        item.type === "exitedReviewMode" ? item.review : undefined;
+      const publicText =
+        item.type === "agentMessage"
+          ? item.text
+          : item.type === "exitedReviewMode"
+            ? item.review
+            : undefined;
       if (
         publicText &&
         [
@@ -477,11 +671,15 @@ export class Engine {
           "final_answer",
         ].includes(item.phase)
       ) {
-        if (p.turnId === this.activeTurn && !["commentary", "partial_answer"].includes(item.phase) &&
-            !this.journal.get("completed_turn:" + p.turnId)) {
+        if (
+          p.turnId === this.activeTurn &&
+          !["commentary", "partial_answer"].includes(item.phase) &&
+          !this.journal.get("completed_turn:" + p.turnId)
+        ) {
           const key = "pending_final:" + p.turnId;
           const pending = this.journal.get(key, []);
-          if (!pending.some((entry: any) => entry.id === item.id)) pending.push(item);
+          if (!pending.some((entry: any) => entry.id === item.id))
+            pending.push(item);
           this.journal.put(key, pending);
           return;
         }
@@ -496,8 +694,13 @@ export class Engine {
         // Native reviews emit the same final text as both agentMessage and
         // exitedReviewMode, with different item IDs. Reserve before sending so
         // an ambiguous first delivery cannot be retried through the other ID.
-        if (p.turnId && !["commentary", "partial_answer"].includes(item.phase)) {
-          const key = "public_final:" + this.journal.fingerprint({ turn: p.turnId, text: publicText });
+        if (
+          p.turnId &&
+          !["commentary", "partial_answer"].includes(item.phase)
+        ) {
+          const key =
+            "public_final:" +
+            this.journal.fingerprint({ turn: p.turnId, text: publicText });
           const original = this.journal.get(key);
           if (original && original !== item.id) return;
           this.journal.put(key, item.id);
@@ -515,7 +718,12 @@ export class Engine {
       }
     }
   }
-  async compaction(turn: string, item: string | undefined, completed: boolean, observed = true) {
+  async compaction(
+    turn: string,
+    item: string | undefined,
+    completed: boolean,
+    observed = true,
+  ) {
     if (!turn) return;
     const turnKey = "compaction_turn:" + turn;
     const current = this.journal.get(turnKey);
@@ -524,14 +732,28 @@ export class Engine {
     const state = this.journal.get(key, {});
     if (!observed && state.started === undefined) return;
     if (completed) {
-      if (state.completed || (current?.completed && (!item || (current.id === "legacy-" + turn && state.started === undefined)))) return;
-      const elapsed = observed && Number.isFinite(state.started) ? Math.max(0, Math.floor((Date.now() - state.started) / 1000)) : undefined;
-      const text = "Context compacted." + (elapsed === undefined ? "" : ` (${durationText(elapsed)})`);
+      if (
+        state.completed ||
+        (current?.completed &&
+          (!item ||
+            (current.id === "legacy-" + turn && state.started === undefined)))
+      )
+        return;
+      const elapsed =
+        observed && Number.isFinite(state.started)
+          ? Math.max(0, Math.floor((Date.now() - state.started) / 1000))
+          : undefined;
+      const text =
+        "Context compacted." +
+        (elapsed === undefined ? "" : ` (${durationText(elapsed)})`);
       // Reserve before sending; never retry an ambiguous notice under another event ID.
       this.journal.db.transaction(() => {
         this.journal.put(key, { ...state, completed: true });
         this.journal.put(turnKey, { id, completed: true });
       })();
+      const timer = this.journal.get("compaction_timer");
+      if (timer?.id === id)
+        this.journal.put("compaction_timer", { ...timer, finalText: text });
       await this.say("compaction-completed-" + id, text);
     } else {
       if (state.started !== undefined || state.completed) return;
@@ -539,8 +761,73 @@ export class Engine {
         this.journal.put(key, { started: Date.now() });
         this.journal.put(turnKey, { id, completed: false });
       })();
-      await this.say("compaction-started-" + id, "Context compaction started.");
+      const receipt = await this.say(
+        "compaction-started-" + id,
+        "Context compaction started.",
+      );
+      if (receipt.status === "sent" && receipt.details?.message_id) {
+        const c = this.store.read(this.instance);
+        this.journal.put("compaction_timer", {
+          id,
+          turn,
+          started: this.journal.get(key).started,
+          message: receipt.details.message_id,
+          thread: c.thread_id,
+          owner: c.owner_id,
+          revision: c.binding_revision,
+          next: Date.now() + this.sender.refreshInterval(),
+          sequence: 0,
+        });
+      }
     }
+  }
+  async refreshCompaction(at = Date.now()) {
+    const timer = this.journal.get("compaction_timer");
+    if (
+      !timer ||
+      at <
+        Math.max(
+          timer.next,
+          this.journal.get("working_edit_after", 0),
+          this.journal.get("working_refresh_after", 0),
+        )
+    )
+      return;
+    const c = this.store.read(this.instance);
+    if (!c.enabled || c.autostart === false || c.removing || c.binding_change)
+      return;
+    if (
+      c.thread_id !== timer.thread ||
+      c.owner_id !== timer.owner ||
+      c.binding_revision !== timer.revision
+    ) {
+      this.journal.put("compaction_timer", null);
+      return;
+    }
+    const text =
+      timer.finalText ??
+      `Compacting context… (${durationText(Math.max(0, Math.floor((at - timer.started) / 1000)))})`;
+    const sequence = timer.sequence + 1;
+    // Reserve each edit before sending; a lost response never causes a new send.
+    this.journal.put("compaction_timer", {
+      ...timer,
+      sequence,
+      next: at + this.sender.refreshInterval(),
+    });
+    this.journal.put("working_edit_after", at + this.sender.refreshInterval());
+    const receipt = await this.sender.send(
+      `compaction-timer-${hash(timer.id)}-${sequence}`,
+      {
+        text,
+        source: "system",
+        edit_id: timer.message,
+        defer_on_limit: false,
+      },
+    );
+    if (receipt.status === "rejected" && receipt.details?.error_code === 429) {
+      this.sender.applyRateLimit(receipt.details.retry_after);
+    } else if (timer.finalText || receipt.status === "rejected")
+      this.journal.put("compaction_timer", null);
   }
   close() {
     this.journal.close();

@@ -5,8 +5,19 @@
     "moduleResolution": "bundler",
     "strict": true,
     "noEmit": true,
-    "types": ["bun"],
-    "skipLibCheck": true
+    "types": [
+      "bun"
+    ],
+    "skipLibCheck": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
   },
-  "include": ["bun/**/*.ts", "tests-bun/**/*.ts", "scripts/build-plugin.ts", "scripts/probe-marketplace.ts", "scripts/probe-slash-commands.ts", "scripts/probe-telemetry.ts"]
+  "include": [
+    "bun/**/*.ts",
+    "tests-bun/**/*.ts",
+    "scripts/build-plugin.ts",
+    "scripts/probe-marketplace.ts",
+    "scripts/probe-slash-commands.ts",
+    "scripts/probe-telemetry.ts"
+  ]
 }

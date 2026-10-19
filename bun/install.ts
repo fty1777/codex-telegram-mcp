@@ -6,13 +6,11 @@ import {
   symlinkSync,
   renameSync,
   lstatSync,
-  mkdirSync,
   writeFileSync,
-  chmodSync,
 } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { join, dirname } from "node:path";
 import { atomic, hash, readJSON, Store, privateDir } from "./state";
-import { pause, start, stop, record, live } from "./process";
+import { pause, start, record } from "./process";
 import { AppServer } from "./appserver";
 import { diagnostic } from "./engine";
 export async function codex(...args: string[]) {
@@ -151,7 +149,7 @@ export async function install(
     mcp_server: "telegram_" + n + "_" + selector.slice(-6),
   };
   atomic(join(path, "config.json"), config);
-  const executable = bindRuntime(s, n, runtime);
+  bindRuntime(s, n, runtime);
   rmSync(join(plugin, "hooks"), { recursive: true, force: true });
   atomic(join(plugin, ".codex-plugin/plugin.json"), {
     name: selector,

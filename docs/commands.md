@@ -22,6 +22,23 @@ Use /help COMMAND to read instructions without invoking a model. Arguments to ot
 /status — Show the Telegram connection and bound Codex session
 ```
 
+## /activity
+
+```text
+/activity — Show tool activity mode
+/activity transient — Show summaries and delete them when the task ends (default)
+/activity keep — Keep summaries after the task ends
+/activity off — Disable tool activity summaries
+Summaries show explored files, bounded search details, and safe command names; raw scripts and arbitrary outputs stay hidden. This setting does not change normal progress messages or final answers.
+```
+
+## /questions
+
+```text
+/questions — List unanswered questions and reply commands
+This is a local query and does not use model tokens.
+```
+
 ## /goal
 
 ```text

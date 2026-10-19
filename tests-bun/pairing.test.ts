@@ -1,3 +1,4 @@
+import { telegramView } from "./telegram-view";
 import { test, expect } from "bun:test";
 import {
   mkdtempSync,
@@ -43,7 +44,7 @@ test.each(["connected", "awaiting-session-reload", "failed"])(
       ]);
       await pollPairing(f.store, "sample", "session-a", f.factory);
       const code = f.calls
-        .find((c) => c.method === "sendMessage")
+        .find((c) => c.method === "sendRichMessage")
         .args.text.match(/Pairing code: ([A-F0-9]+)/)[1];
       let starts = 0;
       const connect = async () => {
@@ -76,7 +77,11 @@ test.each(["connected", "awaiting-session-reload", "failed"])(
       );
       expect(result.notification.status).toBe("sent");
       expect(starts).toBe(1);
-      expect(f.calls.filter((c) => c.method === "sendMessage")).toHaveLength(2);
+      expect(
+        f.calls.filter((c) =>
+          ["sendRichMessage", "sendRichMessage"].includes(c.method),
+        ),
+      ).toHaveLength(2);
       expect(listBots(f.store)[0]!.pairing_connectivity).toBe(
         "awaiting_owner_reply",
       );
@@ -104,12 +109,12 @@ function fixture() {
   const calls: any[] = [];
   const factory = (_token: string): any => ({
     call: async (method: string, args: any) => {
-      calls.push({ method, args });
+      calls.push({ method, args: telegramView(args) });
       if (method === "getMe")
         return { id: 123456, username: "fixture_bot", is_bot: true };
       if (method === "getWebhookInfo") return {};
       if (method === "getUpdates") return updates;
-      if (method === "sendMessage")
+      if (method === "sendRichMessage")
         return { message_id: calls.length, chat: { id: args.chat_id } };
       throw Error("unexpected call");
     },
@@ -191,7 +196,7 @@ test("pairing is durable, session-scoped, explicit, and does not expose credenti
     );
     expect(polled.candidate_count).toBe(1);
     const code = f.calls
-      .find((c) => c.method === "sendMessage")
+      .find((c) => c.method === "sendRichMessage")
       .args.text.match(/Pairing code: ([A-F0-9]+)/)[1];
     expect(JSON.stringify(polled)).not.toContain(code);
     expect(f.store.list()).toEqual([]);
@@ -290,12 +295,16 @@ test("codes are single-use, bounded, and never authorize unsolicited messages", 
       })),
     ]);
     await pollPairing(f.store, "sample", "s", f.factory);
-    expect(f.calls.filter((c) => c.method === "sendMessage").length).toBe(20);
+    expect(f.calls.filter((c) => c.method === "sendRichMessage").length).toBe(
+      20,
+    );
     expect(f.store.list()).toEqual([]);
     await pollPairing(f.store, "sample", "s", f.factory);
-    expect(f.calls.filter((c) => c.method === "sendMessage").length).toBe(20);
+    expect(f.calls.filter((c) => c.method === "sendRichMessage").length).toBe(
+      20,
+    );
     const codes = f.calls
-      .filter((c) => c.method === "sendMessage")
+      .filter((c) => c.method === "sendRichMessage")
       .map((c) => c.args.text.match(/Pairing code: ([A-F0-9]+)/)[1]);
     expect(() => redeemPairing(f.store, "other", "s", codes[0])).toThrow();
     expect(redeemPairing(f.store, "sample", "s", codes[0]).owner_id).toBe(10);
@@ -304,7 +313,9 @@ test("codes are single-use, bounded, and never authorize unsolicited messages", 
     await expect(
       pollPairing(f.store, "sample", "s", f.factory),
     ).rejects.toThrow();
-    expect(f.calls.filter((c) => c.method === "sendMessage").length).toBe(20);
+    expect(f.calls.filter((c) => c.method === "sendRichMessage").length).toBe(
+      20,
+    );
   } finally {
     f.clean();
   }
@@ -412,7 +423,9 @@ test("redemption during an in-flight code send closes the window without revivin
             },
           }));
         sends++;
-        sentCode = params.text.match(/Pairing code: ([A-F0-9]+)/)[1];
+        sentCode = telegramView(params).text.match(
+          /Pairing code: ([A-F0-9]+)/,
+        )[1];
         started();
         await held;
         return {};
@@ -452,7 +465,7 @@ test("two processes redeeming the same code commit exactly one binding", async (
     ]);
     await pollPairing(f.store, "sample", "s", f.factory);
     const code = f.calls
-      .find((c) => c.method === "sendMessage")
+      .find((c) => c.method === "sendRichMessage")
       .args.text.match(/Pairing code: ([A-F0-9]+)/)[1];
     const script = join(f.root, "redeem.ts");
     writeFileSync(
@@ -506,7 +519,7 @@ test("an issued code cannot be redeemed after its window expires", async () => {
     ]);
     await pollPairing(f.store, "sample", "s", f.factory);
     const code = f.calls
-      .find((c) => c.method === "sendMessage")
+      .find((c) => c.method === "sendRichMessage")
       .args.text.match(/Pairing code: ([A-F0-9]+)/)[1];
     const path = join(f.root, "pairings/sample.json");
     atomic(path, { ...readJSON(path), expires_at: Date.now() - 1 });

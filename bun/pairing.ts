@@ -4,6 +4,7 @@ import { randomBytes, createHash } from "node:crypto";
 import { Store, Journal, atomic, privateDir, readJSON } from "./state";
 import { lock } from "./process";
 import { Sender, Telegram } from "./telegram";
+import { richFields } from "./rich";
 import { messages } from "./format";
 
 type Api = Pick<Telegram, "call">;
@@ -212,7 +213,7 @@ export async function pollPairing(
       if (outbound && !signal?.aborted) {
         try {
           const rendered = messages(outbound.text, "system")[0]!;
-          await api.call("sendMessage", { ...outbound, ...rendered });
+          await api.call("sendRichMessage", { chat_id: outbound.chat_id, ...richFields(rendered) });
         } catch {
           /* A reserved code remains valid; never replay an ambiguous send. */
         }

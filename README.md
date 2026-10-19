@@ -46,14 +46,26 @@ again or pair again. See [setup and recovery](docs/setup.md) if you get stuck.
 Send messages, photos, and files to Codex through your bot. The paired bot accepts
 only your private messages.
 
-System notices appear as quotes with a **System** heading inside, including when
-context compaction starts and finishes. Codex messages end with elapsed time and
-reported token usage, for example `(Codex Worked 1m 20s · ↑2.0k c10.0k ↓0.3k · session ↑9.0k c90.0k ↓1.0k)`.
+Replies use Telegram Rich Messages. System notices appear as quotes with a **System** heading inside, including when
+context compaction starts and finishes, with a running timer. Codex messages have a native footer with elapsed time and
+reported token usage, for example `Codex Worked 1m 20s · ↑2.0k c10.0k ↓0.3k · session ↑9.0k c90.0k ↓1.0k`.
 `↑` is uncached input (input minus cached input), `c` is cached input, and `↓` is output. Counts use thousands
-(`k`) with one decimal; session counts use millions (`m`) from 1000k. `Working` marks progress; `session` shows session input/cache/output when available, or its total if the
-breakdown is unavailable.
+(`k`) with one decimal; all counts use millions (`m`) from 1000k. `Working` marks progress; `session` shows session input/cache/output when available, or its total if the
+breakdown is unavailable. The latest Working message refreshes every 10 seconds
+while Codex is working, subject to Telegram rate limits. Tool-content changes
+update immediately, with the footer included in the same edit. When the task ends,
+Working footers are removed; progress text and the final Worked footer remain.
+When reported, `ctx 123.4k/258.4k 45%` shows context tokens, window size,
+and used percentage. The footer also shows the current model, reasoning effort, goal state and unanswered question
+count when present.
 
-Replies support text formatting.
+Replies support text formatting. Inline code up to 256 characters appears as a
+button that copies its text; longer inline code and code blocks keep code formatting. Tool activity updates together with the live Working footer;
+long tool histories continue in additional messages.
+Use `/activity keep` to retain it, `/activity off` to hide it, or
+`/activity transient` to remove tool details when the task ends (default).
+Choice questions appear with copyable IDs and `/answer` commands. Use `/questions`
+to list questions awaiting a reply; this does not use model tokens.
 
 Send `/help` for commands or `/help goal` for usage and examples. Help is returned
 directly without invoking a model. See the [command reference](docs/commands.md)
@@ -71,6 +83,7 @@ for all supported commands, including model settings, planning, and code review.
 | `/stop` | Interrupt the current task |
 | `/queue` | Check queued messages |
 | `/approve CODE`, `/deny CODE` | Respond to an approval request |
+| `/questions` | List unanswered questions and reply commands |
 | `/answer CODE QUESTION ANSWER` | Answer a pending question |
 
 Goals, model settings, planning mode, permissions, and session names are shared

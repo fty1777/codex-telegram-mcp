@@ -1,14 +1,8 @@
 import { dlopen, FFIType } from "bun:ffi";
-import {
-  closeSync,
-  existsSync,
-  openSync,
-  readFileSync,
-  unlinkSync,
-} from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
-import { atomic, readJSON, Store, now, privateDir } from "./state";
+import { atomic, readJSON, Store } from "./state";
 import { controlMcp } from "./lifecycle";
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // Linux ownership primitives; never signal an unverified numeric PID.

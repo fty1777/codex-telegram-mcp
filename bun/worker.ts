@@ -54,6 +54,16 @@ export function pluginEnabled(config: any) {
     throw Error("Plugin enable state unavailable");
   return enabled;
 }
+// Drain the captured output backlog before submitting any newly received input.
+// A bounded snapshot still lets control return if the server keeps streaming.
+export async function drainOutputEvents(
+  events: any[],
+  handle: (event: any) => Promise<boolean | void>,
+) {
+  const count = events.length;
+  for (let i = 0; i < count && events.length; i++)
+    if ((await handle(events.shift())) === false) return;
+}
 export async function guard(client: AppServer, thread: string) {
   const t = (
     await client.call("thread/read", { threadId: thread, includeTurns: false })
@@ -260,11 +270,12 @@ export async function runWorker(
       (async () => {
         while (!stopped) {
           if (
-            processing ||
-            (engine?.activeTurn &&
-              ![...engine.interactions.pending.values()].some(
-                (r) => !r.submitted,
-              ))
+            Date.now() >= journal.get("working_refresh_after", 0) &&
+            (processing ||
+              (engine?.activeTurn &&
+                ![...engine.interactions.pending.values()].some(
+                  (r) => !r.submitted,
+                )))
           )
             await api
               .call(
@@ -333,8 +344,8 @@ export async function runWorker(
           continue;
         }
       }
-      for (let i = 0; i < 20 && client!.events.length && !stopped; i++) {
-        const event = client!.events.shift();
+      await drainOutputEvents(client!.events, async (event) => {
+        if (stopped) return false;
         if (
           ["thread/closed", "thread/archived", "thread/deleted"].includes(
             event.method,
@@ -346,13 +357,43 @@ export async function runWorker(
             active: false,
           });
           shutdown();
-          break;
+          return false;
         }
         await engine!.event(event);
         if (event.params?.threadId === config.thread_id) lastEvent = now();
-      }
+      });
       if (stopped) break;
       if (engine!.status === "disconnected") continue;
+      if (client!.events.length) continue;
+      engine!.syncQuestionStatus();
+      await sender
+        .retryDeferred()
+        .catch((error) =>
+          console.error(diagnostic(String(error), store.token(name))),
+        );
+      await sender
+        .cleanWorking()
+        .catch((error) =>
+          console.error(diagnostic(String(error), store.token(name))),
+        );
+      await engine!
+        .refreshCompaction()
+        .catch((error) =>
+          console.error(diagnostic(String(error), store.token(name))),
+        );
+      await sender
+        .refreshActivityPages()
+        .catch((error) =>
+          console.error(diagnostic(String(error), store.token(name))),
+        );
+      await engine!.activity
+        .flush()
+        .catch((error) =>
+          console.error(diagnostic(String(error), store.token(name))),
+        );
+      // Network-bound maintenance may have allowed more assistant output in.
+      // Publish that output before forwarding a newer user message.
+      if (client!.events.length) continue;
       const batch = journal.readyBatch();
       if (batch.length) {
         processing = true;

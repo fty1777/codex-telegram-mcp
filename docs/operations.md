@@ -11,7 +11,8 @@ Send `/status` to your bot, or ask Codex to check it. A successful setup ends wi
 a Telegram message reaching Codex and a reply arriving back in Telegram.
 
 Replies support text formatting. System notices appear as quotes with a **System** heading inside; Codex messages
-show elapsed time at the end. See [Use it](../README.md#use-it).
+show elapsed time, usage, and available goal/question state in a native footer.
+Use `/questions` to list unanswered questions and copy reply commands. See [Use it](../README.md#use-it).
 
 ## Pause or stop
 

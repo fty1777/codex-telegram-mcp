@@ -29,7 +29,9 @@ test("Markdown becomes text plus nested styles, code and links with UTF-16 offse
   const value = messages(
     "😀 **bold _and italic_** ~~old~~ `a < b` [docs](https://example.com/?a=1&b=2)",
   )[0]!;
-  expect(value.text).toBe("😀 bold and italic old a < b docs");
+  expect(value.text).toBe(
+    "😀 bold and italic old a < b docs (https://example.com/?a=1&b=2)",
+  );
   expect(spans(value, "bold")).toEqual(["bold and italic"]);
   expect(spans(value, "italic")).toEqual(["and italic"]);
   expect(spans(value, "strikethrough")).toEqual(["old"]);
@@ -125,7 +127,9 @@ test("linked images do not create nested text_link entities", () => {
   const value = markdown(
     "[![logo](https://example.com/image.png)](https://example.com/page)",
   );
-  expect(value.text).toBe("logo");
+  expect(value.text).toBe(
+    "logo (https://example.com/image.png) (https://example.com/page)",
+  );
   expect(value.entities.find((e) => e.type === "text_link")?.url).toBe(
     "https://example.com/page",
   );
@@ -138,7 +142,7 @@ test("native blockquotes retain inline formatting without literal quote markers"
   )[0]!;
   expect(value.text).not.toContain("> ");
   expect(spans(value, "blockquote")).toEqual([
-    "😀 bold italic code link\nsecond line",
+    "😀 bold italic code link (https://example.com)\nsecond line",
   ]);
   expect(spans(value, "bold")).toEqual(["bold"]);
   expect(spans(value, "italic")).toEqual(["italic"]);
@@ -168,33 +172,49 @@ test("long native blockquotes preserve Unicode text and quote ranges in each par
 
 test("progress and final footers use elapsed time without adding headings", () => {
   expect(messages("**Checking**", "working", "markdown", 4096, 83)[0]).toEqual({
-    text: "Checking\n(Codex Working 1m 23s)",
+    text: "Checking\nCodex Working 1m 23s",
+    footerOffset: 9,
     entities: [
       { type: "bold", offset: 0, length: 8 },
-      { type: "italic", offset: 9, length: "(Codex Working 1m 23s)".length },
+      { type: "code", offset: 9, length: "Codex Working 1m 23s".length },
     ],
   });
   expect(messages("Done", "codex", "markdown", 4096, 3723)[0]!.text).toBe(
-    "Done\n(Codex Worked 1h 2m)",
+    "Done\nCodex Worked 1h 2m",
   );
   expect(messages("Done", "codex")[0]!.text).toBe("Done");
   const quoted = messages("> **quoted**", "codex", "markdown", 4096, 12)[0]!;
   expect(spans(quoted, "blockquote")).toEqual(["quoted"]);
-  expect(quoted.text).toBe("quoted\n(Codex Worked 12s)");
+  expect(quoted.text).toBe("quoted\nCodex Worked 12s");
 });
 
-test("token statistics remain italic, label cumulative fallbacks and fit split message limits", () => {
+test("token statistics use bold italic, label cumulative fallbacks and fit split message limits", () => {
   const tokens = { tokens: 12345, scope: "turn" as const };
   const final = messages("Done", "codex", "markdown", 4096, 12, tokens)[0];
-  expect(final.text).toBe("Done\n(Codex Worked 12s · 12.3k)");
-  expect(spans(final, "italic").at(-1)).toBe("(Codex Worked 12s · 12.3k)");
-  expect(messages("Working", "working", "plain", 4096, 10, { tokens: 1000000, scope: "session" })[0].text)
-    .toContain("session 1.0m");
-  expect(messages("Notice", "system", "plain", 4096, 10, tokens)[0].text).not.toContain("tokens");
-  const parts = messages("**hello** 😀 ".repeat(1000), "codex", "markdown", 4096, 75, tokens);
+  expect(final.text).toBe("Done\nCodex Worked 12s · 12.3k");
+  expect(spans(final, "bold")).toEqual(["Codex Worked 12s · 12.3k"]);
+  expect(
+    messages("Working", "working", "plain", 4096, 10, {
+      tokens: 1000000,
+      scope: "session",
+    })[0].text,
+  ).toContain("session 1.0m");
+  expect(
+    messages("Notice", "system", "plain", 4096, 10, tokens)[0].text,
+  ).not.toContain("tokens");
+  const parts = messages(
+    "**hello** 😀 ".repeat(1000),
+    "codex",
+    "markdown",
+    4096,
+    75,
+    tokens,
+  );
   for (const part of parts) valid(part, 4096);
-  expect(parts.slice(0, -1).every(p => !p.text.includes("Codex Worked"))).toBe(true);
-  expect(parts.at(-1)!.text).toEndWith("(Codex Worked 1m 15s · 12.3k)");
+  expect(
+    parts.slice(0, -1).every((p) => !p.text.includes("Codex Worked")),
+  ).toBe(true);
+  expect(parts.at(-1)!.text).toEndWith("Codex Worked 1m 15s · 12.3k");
 });
 
 test("system messages have their heading inside a native quote and no timing footer", () => {
@@ -224,9 +244,9 @@ test("long messages keep the complete footer only at the end and within the limi
   expect(
     parts.slice(0, -1).every((p) => !p.text.includes("Codex Working")),
   ).toBe(true);
-  expect(parts.at(-1)!.text.endsWith("\n(Codex Working 1m 15s)")).toBe(true);
+  expect(parts.at(-1)!.text.endsWith("\nCodex Working 1m 15s")).toBe(true);
   expect(parts.map((p) => p.text).join("")).toBe(
-    markdown(input).text + "\n(Codex Working 1m 15s)",
+    markdown(input).text + "\nCodex Working 1m 15s",
   );
   for (const part of parts) valid(part, 4096);
 });
@@ -244,7 +264,7 @@ test("each part of a long system notice repeats its heading inside the quote", (
   }
 });
 
-test("duration footer stays italic even when body formatting exceeds the entity budget", () => {
+test("duration footer stays bold and italic even when body formatting exceeds the entity budget", () => {
   const parts = messages(
     "**bold** ".repeat(250),
     "codex",
@@ -253,62 +273,180 @@ test("duration footer stays italic even when body formatting exceeds the entity 
     42,
   );
   const last = parts.at(-1)!;
-  expect(spans(last, "italic").at(-1)).toBe("(Codex Worked 42s)");
+  expect(spans(last, "bold").at(-1)).toBe("Codex Worked 42s");
+  expect(spans(last, "italic")).toEqual(["Codex Worked 42s"]);
   expect(last.entities.length).toBeLessThanOrEqual(90);
   valid(last, 4096);
 });
 
 test("usage footer distinguishes uncached input, cached input, and output with the same scope", () => {
-  const usage = { sessionBreakdown: { inputTokens: 99000, cachedInputTokens: 90000, outputTokens: 1000 }, tokens: 12345, sessionTokens: 100000, scope: "turn" as const, inputTokens: 12000, cachedInputTokens: 10000, outputTokens: 345 };
-  const footer = "(Codex Worked 12s · ↑2.0k c10.0k ↓0.3k · session ↑9.0k c90.0k ↓1.0k)";
+  const usage = {
+    sessionBreakdown: {
+      inputTokens: 99000,
+      cachedInputTokens: 90000,
+      outputTokens: 1000,
+    },
+    tokens: 12345,
+    sessionTokens: 100000,
+    scope: "turn" as const,
+    inputTokens: 12000,
+    cachedInputTokens: 10000,
+    outputTokens: 345,
+  };
+  const footer =
+    "Codex Worked 12s · ↑2.0k c10.0k ↓0.3k · session ↑9.0k c90.0k ↓1.0k";
   const rendered = messages("Done", "codex", "markdown", 4096, 12, usage)[0];
   expect(rendered.text).toBe("Done\n" + footer);
-  expect(spans(rendered, "italic").at(-1)).toBe(footer);
-  expect(messages("Done", "codex", "markdown", 4096, 12, { ...usage, scope: "session" })[0].text)
-    .toContain("session ↑9.0k c90.0k ↓1.0k");
-  const parts = messages("**hello** 😀 ".repeat(1000), "codex", "markdown", 4096, 12, usage);
-  expect(parts.every(p => p.text.length <= 4096)).toBe(true);
-  expect(parts.slice(0, -1).every(p => !p.text.includes(" c"))).toBe(true);
+  expect(spans(rendered, "code")).toEqual([]);
+  expect(spans(rendered, "blockquote")).toEqual([]);
+  expect(spans(rendered, "bold")).toEqual([footer]);
+  expect(spans(rendered, "italic")).toEqual([footer]);
+  expect(
+    messages("Done", "codex", "markdown", 4096, 12, {
+      ...usage,
+      scope: "session",
+    })[0].text,
+  ).toContain("session ↑9.0k c90.0k ↓1.0k");
+  const parts = messages(
+    "**hello** 😀 ".repeat(1000),
+    "codex",
+    "markdown",
+    4096,
+    12,
+    usage,
+  );
+  expect(parts.every((p) => p.text.length <= 4096)).toBe(true);
+  expect(parts.slice(0, -1).every((p) => !p.text.includes(" c"))).toBe(true);
   expect(parts.at(-1)!.text).toEndWith(footer);
 });
 
-
 test("compact counts retain one decimal for small, zero and large counts", () => {
-  for (const [tokens, expected] of [[0, "0.0k"], [45, "0.0k"], [150, "0.2k"], [999, "1.0k"], [999900, "999.9k"]] as const) {
-    const value = messages("Done", "codex", "plain", 4096, 1, { tokens, sessionTokens: tokens, scope: "turn" })[0];
-    expect(value.text).toBe(`Done\n(Codex Worked 1s · ${expected} · session ${expected})`);
+  for (const [tokens, expected] of [
+    [0, "0.0k"],
+    [45, "0.0k"],
+    [150, "0.2k"],
+    [999, "1.0k"],
+    [999900, "999.9k"],
+  ] as const) {
+    const value = messages("Done", "codex", "plain", 4096, 1, {
+      tokens,
+      sessionTokens: tokens,
+      scope: "turn",
+    })[0];
+    expect(value.text).toBe(
+      `Done\nCodex Worked 1s · ${expected} · session ${expected}`,
+    );
   }
 });
-
 
 test("session components remain visible without a turn baseline", () => {
-  const usage = { tokens: 1000, sessionTokens: 1000, scope: "session" as const,
-    sessionBreakdown: { inputTokens: 900, cachedInputTokens: 700, outputTokens: 100 } };
+  const usage = {
+    tokens: 1000,
+    sessionTokens: 1000,
+    scope: "session" as const,
+    sessionBreakdown: {
+      inputTokens: 900,
+      cachedInputTokens: 700,
+      outputTokens: 100,
+    },
+  };
   const value = messages("Done", "codex", "plain", 4096, 1, usage)[0];
-  expect(value.text).toBe("Done\n(Codex Worked 1s · session ↑0.2k c0.7k ↓0.1k)");
-  expect(spans(value, "italic").at(-1)).toBe(value.text.split("\n").at(-1)!);
+  expect(value.text).toBe("Done\nCodex Worked 1s · session ↑0.2k c0.7k ↓0.1k");
+  expect(spans(value, "bold")).toEqual([value.text.split("\n").at(-1)!]);
 });
 
-
-test("session counts switch individually to millions while turn counts retain k", () => {
-  for (const [tokens, expected] of [[999900, "999.9k"], [1000000, "1.0m"], [1250000, "1.3m"], [125530900, "125.5m"]] as const) {
-    const value = messages("Done", "codex", "plain", 4096, 1, { tokens: 100, sessionTokens: tokens, scope: "turn" })[0];
-    expect(value.text).toBe(`Done\n(Codex Worked 1s · 0.1k · session ${expected})`);
+test("all token counts switch individually to millions", () => {
+  for (const [tokens, expected] of [
+    [999900, "999.9k"],
+    [1000000, "1.0m"],
+    [1250000, "1.3m"],
+    [125530900, "125.5m"],
+  ] as const) {
+    const value = messages("Done", "codex", "plain", 4096, 1, {
+      tokens: 100,
+      sessionTokens: tokens,
+      scope: "turn",
+    })[0];
+    expect(value.text).toBe(
+      `Done\nCodex Worked 1s · 0.1k · session ${expected}`,
+    );
   }
   const value = messages("Done", "codex", "plain", 4096, 1, {
-    tokens: 1234567, scope: "turn", sessionTokens: 125530900,
-    inputTokens: 1200000, cachedInputTokens: 1000000, outputTokens: 34567,
-    sessionBreakdown: { inputTokens: 125229100, cachedInputTokens: 122054700, outputTokens: 301800 },
+    tokens: 1234567,
+    scope: "turn",
+    sessionTokens: 125530900,
+    inputTokens: 1200000,
+    cachedInputTokens: 1000000,
+    outputTokens: 34567,
+    sessionBreakdown: {
+      inputTokens: 125229100,
+      cachedInputTokens: 122054700,
+      outputTokens: 301800,
+    },
   })[0];
-  expect(value.text).toBe("Done\n(Codex Worked 1s · ↑200.0k c1000.0k ↓34.6k · session ↑3.2m c122.1m ↓301.8k)");
+  expect(value.text).toBe(
+    "Done\nCodex Worked 1s · ↑200.0k c1.0m ↓34.6k · session ↑3.2m c122.1m ↓301.8k",
+  );
 });
 
-
 test("working footers subtract cached input before rounding and retain session components", () => {
-  const usage = { tokens: 1149, scope: "turn" as const, sessionTokens: 2000000,
-    inputTokens: 1049, cachedInputTokens: 951, outputTokens: 100,
-    sessionBreakdown: { inputTokens: 1900000, cachedInputTokens: 1900000, outputTokens: 100000 } };
+  const usage = {
+    tokens: 1149,
+    scope: "turn" as const,
+    sessionTokens: 2000000,
+    inputTokens: 1049,
+    cachedInputTokens: 951,
+    outputTokens: 100,
+    sessionBreakdown: {
+      inputTokens: 1900000,
+      cachedInputTokens: 1900000,
+      outputTokens: 100000,
+    },
+  };
   const value = messages("Progress", "working", "plain", 4096, 1, usage)[0];
-  expect(value.text).toBe("Progress\n(Codex Working 1s · ↑0.1k c1.0k ↓0.1k · session ↑0.0k c1.9m ↓100.0k)");
-  expect(spans(value, "italic").at(-1)).toBe(value.text.split("\n").at(-1)!);
+  expect(value.text).toBe(
+    "Progress\nCodex Working 1s · ↑0.1k c1.0k ↓0.1k · session ↑0.0k c1.9m ↓100.0k",
+  );
+  expect(spans(value, "code")).toEqual([value.text.split("\n").at(-1)!]);
+});
+
+test("statusline includes compact context size, capacity, and CLI used percentage", () => {
+  const usage = {
+    tokens: 100,
+    scope: "turn" as const,
+    context: { tokens: 123400, window: 258400, usedPercent: 45 },
+  };
+  const working = messages("Progress", "working", "plain", 4096, 12, usage)[0];
+  expect(working.text).toContain("ctx 123.4k/258.4k 45%");
+  expect(spans(working, "code")[0]).toContain("ctx 123.4k/258.4k 45%");
+  const final = messages("Done", "codex", "plain", 4096, 12, usage)[0];
+  expect(spans(final, "bold")[0]).toContain("ctx 123.4k/258.4k 45%");
+  expect(spans(final, "italic")[0]).toContain("ctx 123.4k/258.4k 45%");
+});
+
+test("link destinations are visible and already visible URLs are not repeated", () => {
+  expect(markdown("[Docs](https://example.com/a?x=1&y=2)").text).toBe(
+    "Docs (https://example.com/a?x=1&y=2)",
+  );
+  expect(markdown("[https://example.com](https://example.com)").text).toBe(
+    "https://example.com",
+  );
+});
+
+test("turn and context counters consistently use millions", () => {
+  const part = messages("Done", "codex", "plain", 4096, 1, {
+    scope: "turn",
+    tokens: 1740000,
+    context: { tokens: 1740000, window: 2000000, usedPercent: 87 },
+  })[0]!;
+  expect(part.text).toContain(" · 1.7m · ctx 1.7m/2.0m 87%");
+});
+
+test("footer displays model effort and CLI goal completion wording", () => {
+  const p = messages("Done", "codex", "plain", 4096, 1, undefined, {
+    model: "gpt-test",
+    effort: "high",
+    goal: "complete",
+  })[0]!;
+  expect(p.text).toContain("gpt-test high · Goal achieved");
 });

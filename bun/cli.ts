@@ -5,7 +5,7 @@ import { Store, atomic } from "./state";
 import { AppServer } from "./appserver";
 import { Sender } from "./telegram";
 import { start, stop, pause, status, parentDeath } from "./process";
-import { install, uninstall, rollback } from "./install";
+import { uninstall, rollback } from "./install";
 import { configure } from "./setup";
 import { mcp } from "./mcp";
 import { runWorker } from "./worker";
@@ -56,8 +56,11 @@ export async function main(argv = process.argv.slice(2)) {
     case "plugin": {
       if (!v["plugin-root"]) throw Error("--plugin-root is required");
       const root = resolve(v["plugin-root"]);
-      const manifest = JSON.parse(readFileSync(join(root, ".codex-plugin/plugin.json"), "utf8"));
-      if (manifest.name !== "telegram") throw Error("Unexpected Telegram plugin identity");
+      const manifest = JSON.parse(
+        readFileSync(join(root, ".codex-plugin/plugin.json"), "utf8"),
+      );
+      if (manifest.name !== "telegram")
+        throw Error("Unexpected Telegram plugin identity");
       await channel(s, { id: "telegram@codex-telegram", root });
       return;
     }

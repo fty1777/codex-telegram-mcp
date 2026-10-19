@@ -1,3 +1,4 @@
+import { telegramView } from "./telegram-view";
 import { test, expect } from "bun:test";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,7 +10,13 @@ test("marketplace pairing attaches without a legacy install and preserves existi
   const root = mkdtempSync(join(tmpdir(), "telegram-marketplace-state-"));
   const store = new Store(root);
   const plugin = { id: "telegram@codex-telegram", root: "/fixture/plugin" };
-  store.configure("sample", "123456:fixture", { id: 123456, username: "sample" }, 42, "session");
+  store.configure(
+    "sample",
+    "123456:fixture",
+    { id: 123456, username: "sample" },
+    42,
+    "session",
+  );
   try {
     const config = attachSharedPlugin(store, "sample", plugin);
     expect(config.plugin).toEqual(plugin);
@@ -19,27 +26,52 @@ test("marketplace pairing attaches without a legacy install and preserves existi
     expect(existsSync(join(root, "manager-installation.json"))).toBe(false);
     const old = { phase: "installed", plugin_id: "legacy@legacy" };
     atomic(join(root, "manager-installation.json"), old);
-    atomic(join(store.instance("sample"), "config.json"), { ...config, autostart: false });
-    const updated = attachSharedPlugin(store, "sample", { ...plugin, root: "/fixture/updated" }, false);
+    atomic(join(store.instance("sample"), "config.json"), {
+      ...config,
+      autostart: false,
+    });
+    const updated = attachSharedPlugin(
+      store,
+      "sample",
+      { ...plugin, root: "/fixture/updated" },
+      false,
+    );
     expect(updated.autostart).toBe(false);
     expect(updated.plugin.root).toBe("/fixture/updated");
     expect(store.token("sample")).toBe("123456:fixture");
     expect(readJSON(join(root, "manager-installation.json"))).toEqual(old);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("marketplace host requires both session ownership and its own plugin binding", async () => {
   const root = mkdtempSync(join(tmpdir(), "telegram-marketplace-owner-"));
   const store = new Store(root);
   const plugin = { id: "telegram@codex-telegram", root: "/fixture/plugin" };
-  store.configure("sample", "123456:fixture", { id: 123456, username: "sample" }, 42, "session");
+  store.configure(
+    "sample",
+    "123456:fixture",
+    { id: 123456, username: "sample" },
+    42,
+    "session",
+  );
   const host = new ChannelHost(store, async () => {}, plugin);
   try {
-    await expect(host.connect("sample", { threadId: "session" })).rejects.toThrow("another installation");
+    await expect(
+      host.connect("sample", { threadId: "session" }),
+    ).rejects.toThrow("another installation");
     attachSharedPlugin(store, "sample", plugin);
-    await expect(host.connect("sample", { threadId: "foreign" })).rejects.toThrow("not bound");
-    expect((await host.connect("sample", { threadId: "session" })).status).toBe("connecting");
-  } finally { await host.close(); rmSync(root, { recursive: true, force: true }); }
+    await expect(
+      host.connect("sample", { threadId: "foreign" }),
+    ).rejects.toThrow("not bound");
+    expect((await host.connect("sample", { threadId: "session" })).status).toBe(
+      "connecting",
+    );
+  } finally {
+    await host.close();
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("one session host owns multiple bots independently and rejects foreign sessions", async () => {
@@ -118,7 +150,7 @@ test("native tools render progress, literal edits and captions through the commo
   const sender = host.sender("sample", { threadId: "session" });
   const calls: any[] = [];
   sender.api.call = async (method, params) => {
-    calls.push({ method, params });
+    calls.push({ method, params: telegramView(params) });
     return { message_id: calls.length, chat: { id: 42 } };
   };
   const { server } = channelServer(store, host);
@@ -250,7 +282,7 @@ test("receiver failure notices explain recovery without exposing internal except
     _method,
     params,
   ) => {
-    messages.push(params);
+    messages.push(telegramView(params));
     return { message_id: 1, chat: { id: 42 } };
   };
   try {
@@ -264,4 +296,33 @@ test("receiver failure notices explain recovery without exposing internal except
     await host.close();
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("output backlogs beyond twenty events drain before new input", async () => {
+  const { drainOutputEvents } = await import("../bun/worker");
+  const queue = Array.from({ length: 25 }, (_, i) => i),
+    seen: any[] = [];
+  queue.push(99);
+  await drainOutputEvents(queue, async (event) => {
+    seen.push(event);
+  });
+  seen.push("new user input");
+  expect(seen.slice(-2)).toEqual([99, "new user input"]);
+  expect(queue).toHaveLength(0);
+});
+
+test("output draining bounds each snapshot without losing newly arriving events", async () => {
+  const { drainOutputEvents } = await import("../bun/worker");
+  const queue = [1],
+    seen: number[] = [];
+  await drainOutputEvents(queue, async (event) => {
+    seen.push(event);
+    queue.push(2);
+  });
+  expect(seen).toEqual([1]);
+  expect(queue).toEqual([2]);
+  await drainOutputEvents(queue, async (event) => {
+    seen.push(event);
+  });
+  expect(seen).toEqual([1, 2]);
 });
