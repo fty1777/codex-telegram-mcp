@@ -266,17 +266,20 @@ export function messages(
   const stats: string[] = [];
   if (typeof elapsed === "number" && Number.isFinite(elapsed)) stats.push(durationText(elapsed));
   if (usage && Number.isSafeInteger(usage.tokens) && usage.tokens >= 0) {
-    const count = (n: number) => `${(Math.round(n / 100) / 10).toFixed(1)}k`;
-    const parts = (value?: Partial<Usage>) => {
+    const count = (n: number, session = false) => {
+      const millions = session && n >= 1_000_000;
+      return `${(Math.round(n / (millions ? 100_000 : 100)) / 10).toFixed(1)}${millions ? "m" : "k"}`;
+    };
+    const parts = (value?: Partial<Usage>, session = false) => {
       if (!value || ![value.inputTokens, value.cachedInputTokens, value.outputTokens].every(n => Number.isSafeInteger(n) && n! >= 0)
           || value.cachedInputTokens! > value.inputTokens!) return "";
-      return `↑${count(value.inputTokens!)} (cache ${count(value.cachedInputTokens!)}) ↓${count(value.outputTokens!)}`;
+      return `↑${count(value.inputTokens!, session)} (cache ${count(value.cachedInputTokens!, session)}) ↓${count(value.outputTokens!, session)}`;
     };
     if (usage.scope === "turn") stats.push(parts(usage) || count(usage.tokens));
     const session = usage.sessionTokens ?? (usage.scope === "session" ? usage.tokens : undefined);
     if (Number.isSafeInteger(session) && session! >= 0) {
-      const detail = parts(usage.sessionBreakdown ?? (usage.scope === "session" ? usage : undefined));
-      stats.push(`session ${count(session!)}${detail ? " " + detail : ""}`);
+      const detail = parts(usage.sessionBreakdown ?? (usage.scope === "session" ? usage : undefined), true);
+      stats.push(`session ${count(session!, true)}${detail ? " " + detail : ""}`);
     }
   }
   const footer = source !== "system" && body.text.length && stats.length

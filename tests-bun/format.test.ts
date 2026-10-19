@@ -189,7 +189,7 @@ test("token statistics remain italic, label cumulative fallbacks and fit split m
   expect(final.text).toBe("Done\n(Codex Worked 12s · 12.3k)");
   expect(spans(final, "italic").at(-1)).toBe("(Codex Worked 12s · 12.3k)");
   expect(messages("Working", "working", "plain", 4096, 10, { tokens: 1000000, scope: "session" })[0].text)
-    .toContain("session 1000.0k");
+    .toContain("session 1.0m");
   expect(messages("Notice", "system", "plain", 4096, 10, tokens)[0].text).not.toContain("tokens");
   const parts = messages("**hello** 😀 ".repeat(1000), "codex", "markdown", 4096, 75, tokens);
   for (const part of parts) valid(part, 4096);
@@ -274,7 +274,7 @@ test("usage footer distinguishes input, included cached input, and output with t
 
 
 test("compact counts retain one decimal for small, zero and large counts", () => {
-  for (const [tokens, expected] of [[0, "0.0k"], [45, "0.0k"], [150, "0.2k"], [999, "1.0k"], [1234567, "1234.6k"]] as const) {
+  for (const [tokens, expected] of [[0, "0.0k"], [45, "0.0k"], [150, "0.2k"], [999, "1.0k"], [999900, "999.9k"]] as const) {
     const value = messages("Done", "codex", "plain", 4096, 1, { tokens, sessionTokens: tokens, scope: "turn" })[0];
     expect(value.text).toBe(`Done\n(Codex Worked 1s · ${expected} · session ${expected})`);
   }
@@ -287,4 +287,18 @@ test("session components remain visible without a turn baseline", () => {
   const value = messages("Done", "codex", "plain", 4096, 1, usage)[0];
   expect(value.text).toBe("Done\n(Codex Worked 1s · session 1.0k ↑0.9k (cache 0.7k) ↓0.1k)");
   expect(spans(value, "italic").at(-1)).toBe(value.text.split("\n").at(-1)!);
+});
+
+
+test("session counts switch individually to millions while turn counts retain k", () => {
+  for (const [tokens, expected] of [[999900, "999.9k"], [1000000, "1.0m"], [1250000, "1.3m"], [125530900, "125.5m"]] as const) {
+    const value = messages("Done", "codex", "plain", 4096, 1, { tokens: 100, sessionTokens: tokens, scope: "turn" })[0];
+    expect(value.text).toBe(`Done\n(Codex Worked 1s · 0.1k · session ${expected})`);
+  }
+  const value = messages("Done", "codex", "plain", 4096, 1, {
+    tokens: 1234567, scope: "turn", sessionTokens: 125530900,
+    inputTokens: 1200000, cachedInputTokens: 1000000, outputTokens: 34567,
+    sessionBreakdown: { inputTokens: 125229100, cachedInputTokens: 122054700, outputTokens: 301800 },
+  })[0];
+  expect(value.text).toBe("Done\n(Codex Worked 1s · ↑1200.0k (cache 1000.0k) ↓34.6k · session 125.5m ↑125.2m (cache 122.1m) ↓301.8k)");
 });
