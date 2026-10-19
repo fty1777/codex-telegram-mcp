@@ -100,12 +100,12 @@ test("final forwarding includes usage reported after the final text and preserve
     await event("turn/started", { turn: { id: "current", startedAt: Math.floor(Date.now() / 1000) - 10 } });
     await event("thread/tokenUsage/updated", { turnId: "current", tokenUsage: { total: { totalTokens: 1100 } } });
     await event("item/completed", { turnId: "current", item: { id: "progress", type: "agentMessage", phase: "commentary", text: "Progress" } });
-    expect(f.calls[0].params.text).toContain(" · 100 tokens)");
+    expect(f.calls[0].params.text).toContain(" · 0.1k · session 1.1k)");
     await event("item/completed", { turnId: "current", item: { id: "final", type: "agentMessage", phase: "final_answer", text: "Done" } });
     expect(f.calls).toHaveLength(1);
     await event("thread/tokenUsage/updated", { turnId: "current", tokenUsage: { total: { totalTokens: 1250 } } });
     await event("turn/completed", { turn: { id: "current", durationMs: 12000 } });
-    expect(f.calls[1].params.text).toBe("Done\n(Codex Worked 12s · 250 tokens)");
+    expect(f.calls[1].params.text).toBe("Done\n(Codex Worked 12s · 0.3k · session 1.3k)");
     expect(f.calls[1].params.entities.at(-1).type).toBe("italic");
     await event("turn/completed", { turn: { id: "current", durationMs: 12000 } });
     expect(f.calls).toHaveLength(2);

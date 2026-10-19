@@ -186,15 +186,15 @@ test("progress and final footers use elapsed time without adding headings", () =
 test("token statistics remain italic, label cumulative fallbacks and fit split message limits", () => {
   const tokens = { tokens: 12345, scope: "turn" as const };
   const final = messages("Done", "codex", "markdown", 4096, 12, tokens)[0];
-  expect(final.text).toBe("Done\n(Codex Worked 12s · 12,345 tokens)");
-  expect(spans(final, "italic").at(-1)).toBe("(Codex Worked 12s · 12,345 tokens)");
+  expect(final.text).toBe("Done\n(Codex Worked 12s · 12.3k)");
+  expect(spans(final, "italic").at(-1)).toBe("(Codex Worked 12s · 12.3k)");
   expect(messages("Working", "working", "plain", 4096, 10, { tokens: 1000000, scope: "session" })[0].text)
-    .toContain("session 1,000,000 tokens");
+    .toContain("session 1000.0k");
   expect(messages("Notice", "system", "plain", 4096, 10, tokens)[0].text).not.toContain("tokens");
   const parts = messages("**hello** 😀 ".repeat(1000), "codex", "markdown", 4096, 75, tokens);
   for (const part of parts) valid(part, 4096);
   expect(parts.slice(0, -1).every(p => !p.text.includes("Codex Worked"))).toBe(true);
-  expect(parts.at(-1)!.text).toEndWith("(Codex Worked 1m 15s · 12,345 tokens)");
+  expect(parts.at(-1)!.text).toEndWith("(Codex Worked 1m 15s · 12.3k)");
 });
 
 test("system messages have their heading inside a native quote and no timing footer", () => {
@@ -259,15 +259,23 @@ test("duration footer stays italic even when body formatting exceeds the entity 
 });
 
 test("usage footer distinguishes input, included cached input, and output with the same scope", () => {
-  const usage = { tokens: 12345, scope: "turn" as const, inputTokens: 12000, cachedInputTokens: 10000, outputTokens: 345 };
-  const footer = "(Codex Worked 12s · 12,345 tokens · in 12,000 (cached 10,000) · out 345)";
+  const usage = { tokens: 12345, sessionTokens: 100000, scope: "turn" as const, inputTokens: 12000, cachedInputTokens: 10000, outputTokens: 345 };
+  const footer = "(Codex Worked 12s · ↑12.0k (cache 10.0k) ↓0.3k · session 100.0k)";
   const rendered = messages("Done", "codex", "markdown", 4096, 12, usage)[0];
   expect(rendered.text).toBe("Done\n" + footer);
   expect(spans(rendered, "italic").at(-1)).toBe(footer);
   expect(messages("Done", "codex", "markdown", 4096, 12, { ...usage, scope: "session" })[0].text)
-    .toContain("session 12,345 tokens · in 12,000 (cached 10,000) · out 345");
+    .toContain("session 100.0k");
   const parts = messages("**hello** 😀 ".repeat(1000), "codex", "markdown", 4096, 12, usage);
   expect(parts.every(p => p.text.length <= 4096)).toBe(true);
-  expect(parts.slice(0, -1).every(p => !p.text.includes("cached"))).toBe(true);
+  expect(parts.slice(0, -1).every(p => !p.text.includes("cache"))).toBe(true);
   expect(parts.at(-1)!.text).toEndWith(footer);
+});
+
+
+test("compact counts retain one decimal for small, zero and large counts", () => {
+  for (const [tokens, expected] of [[0, "0.0k"], [45, "0.0k"], [150, "0.2k"], [999, "1.0k"], [1234567, "1234.6k"]] as const) {
+    const value = messages("Done", "codex", "plain", 4096, 1, { tokens, sessionTokens: tokens, scope: "turn" })[0];
+    expect(value.text).toBe(`Done\n(Codex Worked 1s · ${expected} · session ${expected})`);
+  }
 });

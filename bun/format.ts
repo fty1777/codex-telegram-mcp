@@ -266,13 +266,15 @@ export function messages(
   const stats: string[] = [];
   if (typeof elapsed === "number" && Number.isFinite(elapsed)) stats.push(durationText(elapsed));
   if (usage && Number.isSafeInteger(usage.tokens) && usage.tokens >= 0) {
-    const count = (n: number) => n.toLocaleString("en-US");
-    stats.push(`${usage.scope === "session" ? "session " : ""}${count(usage.tokens)} tokens`);
-    if ([usage.inputTokens, usage.cachedInputTokens, usage.outputTokens].every(n => Number.isSafeInteger(n) && n! >= 0)
-        && usage.cachedInputTokens! <= usage.inputTokens!) {
-      stats.push(`in ${count(usage.inputTokens!)} (cached ${count(usage.cachedInputTokens!)})`);
-      stats.push(`out ${count(usage.outputTokens!)}`);
+    const count = (n: number) => `${(Math.round(n / 100) / 10).toFixed(1)}k`;
+    if (usage.scope === "turn") {
+      if ([usage.inputTokens, usage.cachedInputTokens, usage.outputTokens].every(n => Number.isSafeInteger(n) && n! >= 0)
+          && usage.cachedInputTokens! <= usage.inputTokens!)
+        stats.push(`↑${count(usage.inputTokens!)} (cache ${count(usage.cachedInputTokens!)}) ↓${count(usage.outputTokens!)}`);
+      else stats.push(count(usage.tokens));
     }
+    const session = usage.sessionTokens ?? (usage.scope === "session" ? usage.tokens : undefined);
+    if (Number.isSafeInteger(session) && session! >= 0) stats.push(`session ${count(session!)}`);
   }
   const footer = source !== "system" && body.text.length && stats.length
     ? `(Codex ${source === "working" ? "Working" : "Worked"} ${stats.join(" · ")})` : "";

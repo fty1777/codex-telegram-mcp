@@ -54,11 +54,11 @@ try {
   assert(Number.isSafeInteger(firstTotal));
   const second = await run(2), secondTotal = usage.filter(u => u.turnId === second).at(-1)?.tokenUsage.total.totalTokens;
   assert(Number.isSafeInteger(secondTotal) && secondTotal > firstTotal);
-  assert(sent.some(s => s.params.text?.includes(`${(secondTotal - firstTotal).toLocaleString("en-US")} tokens`)));
+  assert(sent.some(s => s.params.text?.includes(`session ${(Math.round(secondTotal / 100) / 10).toFixed(1)}k`)));
   const before = usage.filter(u => u.turnId === first).at(-1).tokenUsage.total;
   const after = usage.filter(u => u.turnId === second).at(-1).tokenUsage.total;
-  const count = (key: string) => (after[key] - before[key]).toLocaleString("en-US");
-  assert(sent.some(s => s.params.text?.includes(`in ${count("inputTokens")} (cached ${count("cachedInputTokens")}) · out ${count("outputTokens")}`)));
+  const count = (key: string) => `${(Math.round((after[key] - before[key]) / 100) / 10).toFixed(1)}k`;
+  assert(sent.some(s => s.params.text?.includes(`↑${count("inputTokens")} (cache ${count("cachedInputTokens")}) ↓${count("outputTokens")}`)));
   await client.call("thread/compact/start", { threadId });
   await finishTurn();
   assert.equal(sent.filter(s => s.params.text === "System\nContext compaction started.").length, 1);

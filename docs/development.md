@@ -196,11 +196,12 @@ are differenced against the observed preceding turn's total; `last` is one model
 request and must never be mistaken for a whole turn. Counts include reported
 input and output, including cached input; they are not price estimates. Input,
 cached input, and output are also differenced individually and displayed as
-`in N (cached N) · out N`; cached input is a subset of input, not an additional
+`↑N (cache N) ↓N`; cached input is a subset of input, not an additional
 count. Components are omitted if their matching baseline is unavailable (for
 example, the first turn after upgrading an older journal) or a component resets.
-Session components are never mixed with a turn total. When a
-turn baseline is unknown, the counter is explicitly labeled `session`. No token
+Session components are never mixed with turn components. Counts use `k` with one
+decimal (1k = 1000 tokens); the session total is always appended separately. When
+a turn baseline is unknown, only the `session` total is shown. No token
 counter is shown before a valid usage snapshot is available. Connection changes
 invalidate stale snapshots and the shared checkpoint, while preserving known
 baselines for a turn that remains active. Counter resets discard its baseline.
