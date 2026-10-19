@@ -14,10 +14,32 @@ export function listBots(store: Store) {
     let pairingConnectivity = "not_tested";
     let pending = 0,
       held = 0;
+    let lastInbound: any, lastOutbound: any, lastExit: any;
     const path = join(store.instance(config.name), "delivery.sqlite3");
     if (existsSync(path)) {
       const db = new Database(path, { readonly: true });
       try {
+        const meta = (key: string) => {
+          const row: any = db
+            .query("SELECT value FROM metadata WHERE key=?")
+            .get(key);
+          return row ? JSON.parse(row.value) : null;
+        };
+        lastInbound =
+          meta("last_inbound") ??
+          db
+            .query(
+              "SELECT status,updated FROM delivery WHERE direction='in' AND status='accepted' ORDER BY updated DESC LIMIT 1",
+            )
+            .get();
+        lastOutbound =
+          meta("last_outbound") ??
+          db
+            .query(
+              "SELECT status,updated FROM delivery WHERE direction='out' ORDER BY updated DESC LIMIT 1",
+            )
+            .get();
+        lastExit = meta("worker_exit");
         const probe: any = db
           .query(
             "SELECT status, updated FROM delivery WHERE direction='out' AND key='pairing-success'",
@@ -71,6 +93,22 @@ export function listBots(store: Store) {
             runtime.health?.telegram?.status === "connected"
           ? "receiver_connected"
           : "paired_receiver_not_ready",
+      recovery: runtime.health?.recovery
+        ? {
+            status: runtime.health.recovery.status,
+            pending: runtime.health.recovery.pending,
+            blocked: runtime.health.recovery.blocked,
+          }
+        : null,
+      last_inbound: lastInbound
+        ? { status: lastInbound.status, updated: lastInbound.updated }
+        : null,
+      last_outbound: lastOutbound
+        ? { status: lastOutbound.status, updated: lastOutbound.updated }
+        : null,
+      last_exit: lastExit
+        ? { reason: lastExit.reason, updated: lastExit.updated }
+        : null,
       pending_messages: pending,
       held_messages: held,
       outgoing_directory: join(store.instance(config.name), "outgoing"),

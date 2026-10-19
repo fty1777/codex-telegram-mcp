@@ -389,3 +389,34 @@ The footer shows the configured thread model and reasoning effort from resume/re
 snapshots and thread/settings/updated notifications. Unknown settings are omitted.
 Goal completion uses “Goal achieved”. Nonzero command exit codes replace the tool heading with “Failed (exit N) COMMAND”,
 followed by “(no output)” when appropriate, without a system warning.
+
+## Receiver recovery and exit diagnostics
+
+Polling and command registration start before Codex attachment/history recovery.
+`bun/recovery.ts` scans history through a separate, cancellable Engine and stages
+outbound intents in durable `history_queue:*` records. A background delivery loop
+drains those intents and rate-limit retries; neither slow historical HTTP nor a
+blocked retry holds up foreground event or inbox processing. History commentary
+is durable history, not expiring live progress. Original send request IDs and
+legacy receipts are preserved; ambiguous results are blocked for inspection.
+Each intent captures the owner, thread and binding revision, checked again by
+Sender before dispatch. Binding changes never retarget old history.
+
+Reconnection closes the old App Server client, cancels and joins its scan, then
+creates the next Engine. Generation checks prevent concurrent scan starts. Worker
+shutdown aborts HTTP, cancels recovery and joins background tasks before closing
+journals or releasing receiver ownership. No routine recovery notifications are
+sent to Telegram.
+
+Health reports polling, recovery pending/blocked counts, last accepted inbound and
+outbound delivery separately. `list_bots` exposes only their allowlisted summaries,
+plus `last_exit`. `worker_exit` and timestamped journal records retain explicit
+shutdown reasons: session lifecycle, host cancellation, signals, lease/binding
+revocation, polling conflict or unexpected worker error. An old live health record
+left behind after ownership was lost is recorded as `unclean_previous_exit`; this
+means the precise cause is unknown, not a diagnosis of the old incident.
+
+`tests-bun/recovery.test.ts` covers blocked historical sends with prompt owner input,
+two-bot isolation, cancellation/replacement, stable receipts, flood backoff, binding
+changes and diagnostic privacy. These are controlled local tests, not evidence of
+Telegram delivery in an unrelated installation.

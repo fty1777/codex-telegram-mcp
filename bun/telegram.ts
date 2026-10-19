@@ -264,6 +264,7 @@ export class Sender {
       format?: TextFormat;
       activity_page?: boolean;
       activity_block?: boolean;
+      expected_binding?: { thread: string; owner: number; revision?: number };
       deferred_attempt?: boolean;
       defer_on_limit?: boolean;
     } = {},
@@ -282,6 +283,23 @@ export class Sender {
       owner = c.owner_id;
     if (!c.enabled || !Number.isSafeInteger(owner) || owner <= 0)
       throw Error("Instance paused or unpaired");
+    const expected = options.expected_binding;
+    if (
+      expected &&
+      (c.thread_id !== expected.thread ||
+        c.owner_id !== expected.owner ||
+        c.binding_revision !== expected.revision ||
+        c.binding_change ||
+        c.removing ||
+        c.autostart === false)
+    )
+      return {
+        status: "rejected",
+        details: {
+          reason: "Historical delivery binding changed",
+          binding_changed: true,
+        },
+      };
     const params: any = { chat_id: owner };
     const fp: any = {
       chat_id: owner,
@@ -378,7 +396,7 @@ export class Sender {
               ? `<blockquote><b>System</b><br/>${html}</blockquote>`
               : html;
       }
-      if (source === "working" && edit_id === undefined) {
+      if (source === "working" && edit_id === undefined && !options.activity_page) {
         workingHadUsage = !!usage;
         const footer = messages(
           "x",
@@ -784,6 +802,7 @@ export class Sender {
       // Working commentary describes a moment in time, not a durable reply.
       // Never deliver stale progress after a long cooldown or a completed turn.
       if (
+        !state.options.expected_binding &&
         state.options.source === "working" &&
         (!state.created ||
           at - state.created >= 60000 ||

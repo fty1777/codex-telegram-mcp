@@ -9,6 +9,10 @@ separately.
 
 Send `/status` to your bot, or ask Codex to check it. A successful setup ends with
 a Telegram message reaching Codex and a reply arriving back in Telegram.
+Being able to send a message or photo alone does not confirm receiving works.
+When reconnecting, history is restored in the background while new messages can
+still be received. Ask Codex to check the last received message and recovery state
+if messages appear delayed.
 
 Replies support text formatting. System notices appear as quotes with a **System** heading inside; Codex messages
 show elapsed time, usage, and available goal/question state in a native footer.

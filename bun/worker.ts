@@ -9,7 +9,8 @@ import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { AppServer } from "./appserver";
 import { Engine, diagnostic } from "./engine";
-import { Store, Journal, atomic, now, privateDir } from "./state";
+import { HistoryRecovery } from "./recovery";
+import { Store, Journal, atomic, now, privateDir, readJSON } from "./state";
 import { Telegram, TelegramError, Sender } from "./telegram";
 import { COMMANDS } from "./commands";
 export { COMMANDS } from "./commands";
@@ -135,6 +136,9 @@ export async function runWorker(
   const api = Telegram.forInstance(store, name),
     sender = new Sender(store, name),
     journal = new Journal(path);
+  const recovery = new HistoryRecovery(store, name, sender);
+  let stopReason: string | undefined;
+  let stopDetail: string | undefined;
   let stopped = false,
     client: AppServer | undefined,
     engine: Engine | undefined,
@@ -144,15 +148,20 @@ export async function runWorker(
     menuHealth: any = { status: "starting" },
     lastEvent = now();
   const started = now();
-  const shutdown = () => {
+  const shutdown = (reason = "worker_finished") => {
+    stopReason ??= reason;
     stopped = true;
+    recovery.cancel();
     api.abort();
     sender.api.abort();
     client?.close();
   };
-  process.on("SIGTERM", shutdown);
-  process.on("SIGINT", shutdown);
-  signal?.addEventListener("abort", shutdown, { once: true });
+  const onTerm = () => shutdown("signal:SIGTERM");
+  const onInterrupt = () => shutdown("signal:SIGINT");
+  const onAbort = () => shutdown("session_host_aborted");
+  process.on("SIGTERM", onTerm);
+  process.on("SIGINT", onInterrupt);
+  signal?.addEventListener("abort", onAbort, { once: true });
   atomic(join(path, "worker-process.json"), identity(process.pid));
   let bg: Promise<any>[] = [];
   const wait = async (ms: number) => {
@@ -164,15 +173,26 @@ export async function runWorker(
       const current = store.read(name);
       if (
         !current.enabled ||
+        current.autostart === false ||
         current.thread_id !== config.thread_id ||
         current.binding_revision !== config.binding_revision ||
         current.binding_change ||
         !pluginEnabled(current)
       )
-        shutdown();
+        shutdown(
+          !current.enabled
+            ? "instance_disabled"
+            : current.autostart === false
+              ? "instance_paused"
+              : current.binding_change ||
+                  current.thread_id !== config.thread_id ||
+                  current.binding_revision !== config.binding_revision
+                ? "binding_changed"
+                : "plugin_disabled_or_removed",
+        );
       else leaseFailures = 0;
     } catch {
-      if (++leaseFailures >= 3) shutdown();
+      if (++leaseFailures >= 3) shutdown("lease_check_failed");
     }
   }, 2000);
   const health = setInterval(
@@ -187,42 +207,42 @@ export async function runWorker(
         active_turn: engine?.activeTurn ?? null,
         telegram: pollHealth,
         outbound: journal.get("last_outbound"),
+        inbound: journal.get("last_inbound"),
+        recovery: recovery.summary(),
         command_menu: menuHealth,
         seconds_since_codex_event: Math.round(now() - lastEvent),
       }),
     1000,
   );
   try {
+    const priorHealthPath = join(path, "health.json");
+    if (existsSync(priorHealthPath)) {
+      const previous = readJSON(priorHealthPath);
+      if (previous?.pid && previous.status !== "stopped") {
+        const exit = {
+          reason: "unclean_previous_exit",
+          started: previous.started,
+          updated: previous.updated,
+        };
+        journal.put("worker_exit", exit);
+        journal.put(
+          "worker_exit:" + (previous.started ?? previous.updated),
+          exit,
+        );
+      }
+    }
     if (!pluginEnabled(config)) throw Error("Plugin disabled or removed");
     const connect = async () => {
       client?.close();
+      await recovery.stop();
       engine?.close();
       client = await AppServer.connect(config.endpoint);
       await guard(client, config.thread_id);
       engine = new Engine(store, name, client, sender);
       await engine.attach();
-      await engine.recover();
+      if (!engine.waitingForHistory) await recovery.start(client, engine.recoveryBoundary);
       lastEvent = now();
     };
-    let startupNotified = false;
-    while (!stopped) {
-      try {
-        await connect();
-        break;
-      } catch (e) {
-        if (stopped) break;
-        console.error(diagnostic(String(e), store.token(name)));
-        if (!startupNotified) {
-          await sender.send("startup-" + started, {
-            source: "system",
-            text: "Your Codex conversation is temporarily unavailable. Reconnecting automatically; no action is needed right now.",
-          });
-          startupNotified = true;
-        }
-        await wait(2000);
-      }
-    }
-    if (stopped) return;
     bg.push(
       (async () => {
         while (!stopped) {
@@ -258,7 +278,7 @@ export async function runWorker(
                 source: "system",
                 text: "Telegram receiving has stopped because this bot is being used by another connection. Ask Codex to check the connection before restarting it.",
               });
-              shutdown();
+              shutdown("telegram_poll_conflict");
               break;
             }
             await wait(2000);
@@ -313,14 +333,48 @@ export async function runWorker(
         }
       })(),
     );
+    bg.push(
+      (async () => {
+        while (!stopped) {
+          try {
+            await sender.retryDeferred();
+            if (!stopped) await recovery.deliverNext();
+          } catch (error) {
+            if (!stopped)
+              console.error(diagnostic(String(error), store.token(name)));
+          }
+          await wait(1000);
+        }
+      })(),
+    );
+    let startupNotified = false;
+    while (!stopped) {
+      try {
+        await connect();
+        break;
+      } catch (e) {
+        if (stopped) break;
+        console.error(diagnostic(String(e), store.token(name)));
+        if (!startupNotified) {
+          await sender.send("startup-" + started, {
+            source: "system",
+            text: "Your Codex conversation is temporarily unavailable. Reconnecting automatically; no action is needed right now.",
+          });
+          startupNotified = true;
+        }
+        await wait(2000);
+      }
+    }
+    if (stopped) return;
     let failed = false;
+    let nextRecoveryAttempt = Date.now() + 5000;
     let nextHistoryAttempt = 0;
     while (!stopped) {
       if (engine!.waitingForHistory && Date.now() >= nextHistoryAttempt) {
         nextHistoryAttempt = Date.now() + 1000;
         try {
           await engine!.attach();
-          await engine!.recover();
+          if (!engine!.waitingForHistory) await recovery.start(client!, engine!.recoveryBoundary);
         } catch {
           engine!.status = "disconnected";
         }
@@ -344,6 +398,15 @@ export async function runWorker(
           continue;
         }
       }
+      if (
+        !engine!.waitingForHistory &&
+        recovery.status.status === "failed" &&
+        !recovery.scanning &&
+        Date.now() >= nextRecoveryAttempt
+      ) {
+        nextRecoveryAttempt = Date.now() + 5000;
+        await recovery.start(client!, engine!.recoveryBoundary);
+      }
       await drainOutputEvents(client!.events, async (event) => {
         if (stopped) return false;
         if (
@@ -356,7 +419,7 @@ export async function runWorker(
             thread_id: config.thread_id,
             active: false,
           });
-          shutdown();
+          shutdown("session_" + event.method.split("/")[1]);
           return false;
         }
         await engine!.event(event);
@@ -366,11 +429,6 @@ export async function runWorker(
       if (engine!.status === "disconnected") continue;
       if (client!.events.length) continue;
       engine!.syncQuestionStatus();
-      await sender
-        .retryDeferred()
-        .catch((error) =>
-          console.error(diagnostic(String(error), store.token(name))),
-        );
       await sender
         .cleanWorking()
         .catch((error) =>
@@ -399,7 +457,7 @@ export async function runWorker(
         processing = true;
         try {
           const result = await engine!.receiveBatch(batch);
-          if (result === "paused") shutdown();
+          if (result === "paused") shutdown("instance_paused");
           else journal.handled(batch.map((u: any) => u.update_id));
         } finally {
           processing = false;
@@ -407,23 +465,40 @@ export async function runWorker(
       }
       await wait(50);
     }
+  } catch (error) {
+    stopDetail = diagnostic(String(error), store.token(name));
+    shutdown("worker_error");
+    throw error;
   } finally {
     shutdown();
     clearInterval(lease);
     clearInterval(health);
-    await Promise.allSettled(bg);
+    await Promise.allSettled([...bg, recovery.stop()]);
     engine?.close();
+    const exit = {
+      reason: stopReason,
+      detail: stopDetail,
+      updated: now(),
+      started,
+      thread_id: config.thread_id,
+      telegram: pollHealth,
+      recovery: recovery.summary(),
+      inbound: journal.get("last_inbound"),
+    };
+    journal.put("worker_exit", exit);
+    journal.put("worker_exit:" + started, exit);
     journal.close();
     sender.journal.close();
-    process.off("SIGTERM", shutdown);
-    process.off("SIGINT", shutdown);
-    signal?.removeEventListener("abort", shutdown);
+    process.off("SIGTERM", onTerm);
+    process.off("SIGINT", onInterrupt);
+    signal?.removeEventListener("abort", onAbort);
     rmSync(join(path, "worker-process.json"), { force: true });
     atomic(join(path, "health.json"), {
       pid: null,
       updated: now(),
       status: "stopped",
       runtime: "bun",
+      exit,
     });
     unlock();
   }

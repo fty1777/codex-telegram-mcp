@@ -94,11 +94,18 @@ export async function messageInput(m: any, api: Telegram, inbox: string) {
   } else if (!text) throw Error("Unsupported Telegram message type");
   return input;
 }
+export type RecoveryBoundary = {
+  since: number;
+  activeTurn: string | null;
+  items: Set<string>;
+};
+
 export class Engine {
   config: any;
   journal: Journal;
   thread: string;
   activeTurn: string | null = null;
+  recoveryBoundary?: RecoveryBoundary;
   status = "connecting";
   interactions: Interactions;
   activity: Activity;
@@ -138,6 +145,7 @@ export class Engine {
   waitingForHistory = false;
   usageAttached = false;
   async attach() {
+    const attachedAt = Date.now();
     if (!this.usageAttached) {
       reconnectUsage(this.journal);
       this.usageAttached = true;
@@ -193,12 +201,21 @@ export class Engine {
         ).thread.turns ?? [];
     this.activeTurn =
       [...turns].reverse().find((t) => t.status === "inProgress")?.id ?? null;
+    this.recoveryBoundary = {
+      since: attachedAt,
+      activeTurn: this.activeTurn,
+      items: new Set(
+        turns.flatMap((turn: any) =>
+          (turn.items ?? []).map((item: any) => item.id),
+        ),
+      ),
+    };
     this.journal.put("active_turn", this.activeTurn);
     const active = turns.find((turn: any) => turn.id === this.activeTurn);
     if (active) recordTurnTiming(this.journal, active, true);
   }
-  async recover() {
-    if (this.waitingForHistory) return;
+  async recover(signal?: AbortSignal, boundary?: RecoveryBoundary) {
+    if (this.waitingForHistory || signal?.aborted) return;
     const t = (
       await this.client.call("thread/read", {
         threadId: this.thread,
@@ -207,10 +224,19 @@ export class Engine {
     ).thread;
     const initialized = this.journal.get("history_initialized", false);
     for (const turn of t.turns ?? []) {
+      if (signal?.aborted) return;
+      await Bun.sleep(0);
+      if (signal?.aborted) return;
       const observed =
         this.journal.get("pending_final:" + turn.id, []).length ||
         this.journal.get("compaction_turn:" + turn.id);
-      if (!initialized && turn.status !== "inProgress" && !observed) {
+      const live =
+        this.journal.get("live_turn:" + turn.id) ||
+        (boundary &&
+          (turn.id === boundary.activeTurn ||
+            (typeof turn.startedAt === "number" &&
+              turn.startedAt >= Math.floor(boundary.since / 1000))));
+      if (!initialized && turn.status !== "inProgress" && !observed && !live) {
         this.journal.put("historical_turn:" + turn.id, true);
         continue;
       }
@@ -222,11 +248,17 @@ export class Engine {
             await this.questions.offer(item, turn.id);
         if (!initialized)
           for (const item of (turn.items ?? []).slice(0, -1))
-            if (item.type === "agentMessage")
+            if (
+              item.type === "agentMessage" &&
+              (!boundary || boundary.items.has(item.id))
+            )
               this.journal.put("delivered_item:" + item.id, true);
         continue;
       }
-      for (const item of turn.items ?? [])
+      for (const item of turn.items ?? []) {
+        if (signal?.aborted) return;
+        await Bun.sleep(0);
+        if (signal?.aborted) return;
         await this.event({
           method: "item/completed",
           params: {
@@ -236,12 +268,14 @@ export class Engine {
             recovered: true,
           },
         });
+      }
+      if (signal?.aborted) return;
       await this.event({
         method: "turn/completed",
         params: { threadId: this.thread, turn },
       });
     }
-    this.journal.put("history_initialized", true);
+    if (!signal?.aborted) this.journal.put("history_initialized", true);
   }
   async say(
     key: string,
@@ -268,14 +302,21 @@ export class Engine {
     ) {
       // Finish an already journaled pre-formatting message using its original
       // chunk boundaries. Never reinterpret or replay a recorded chunk.
+      let queued = false;
       for (const [i, part] of legacy.entries()) {
         const result = await this.sender.send(`${base}-${i}`, {
           text: part,
           source,
         });
+        if (result.status === "queued" && result.details?.history) {
+          queued = true;
+          continue;
+        }
         if (result.status !== "sent") return result;
       }
-      return { status: "sent" };
+      return queued
+        ? { status: "queued", details: { history: true } }
+        : { status: "sent" };
     }
     return this.sender.send(base + "-0", {
       text,
@@ -368,6 +409,11 @@ export class Engine {
         this.started(result.turn.id, result.turn);
       }
       this.journal.finish("in", key, "accepted", result);
+      this.journal.put("last_inbound", {
+        status: "accepted",
+        updated: Date.now() / 1000,
+        request_id: key,
+      });
       return "accepted";
     } catch (e) {
       if (
@@ -403,6 +449,7 @@ export class Engine {
     }
   }
   started(id: string, turn?: any) {
+    this.journal.put("live_turn:" + id, true);
     startUsage(this.journal, this.thread, id);
     recordTurnTiming(this.journal, { ...turn, id }, true);
     this.activeTurn = id;
