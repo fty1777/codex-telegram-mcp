@@ -260,12 +260,12 @@ test("duration footer stays italic even when body formatting exceeds the entity 
 
 test("usage footer distinguishes input, included cached input, and output with the same scope", () => {
   const usage = { sessionBreakdown: { inputTokens: 99000, cachedInputTokens: 90000, outputTokens: 1000 }, tokens: 12345, sessionTokens: 100000, scope: "turn" as const, inputTokens: 12000, cachedInputTokens: 10000, outputTokens: 345 };
-  const footer = "(Codex Worked 12s · ↑12.0k (c10.0k) ↓0.3k · session 100.0k ↑99.0k (c90.0k) ↓1.0k)";
+  const footer = "(Codex Worked 12s · ↑12.0k (c10.0k) ↓0.3k · session ↑99.0k (c90.0k) ↓1.0k)";
   const rendered = messages("Done", "codex", "markdown", 4096, 12, usage)[0];
   expect(rendered.text).toBe("Done\n" + footer);
   expect(spans(rendered, "italic").at(-1)).toBe(footer);
   expect(messages("Done", "codex", "markdown", 4096, 12, { ...usage, scope: "session" })[0].text)
-    .toContain("session 100.0k ↑99.0k (c90.0k) ↓1.0k");
+    .toContain("session ↑99.0k (c90.0k) ↓1.0k");
   const parts = messages("**hello** 😀 ".repeat(1000), "codex", "markdown", 4096, 12, usage);
   expect(parts.every(p => p.text.length <= 4096)).toBe(true);
   expect(parts.slice(0, -1).every(p => !p.text.includes("(c"))).toBe(true);
@@ -285,7 +285,7 @@ test("session components remain visible without a turn baseline", () => {
   const usage = { tokens: 1000, sessionTokens: 1000, scope: "session" as const,
     sessionBreakdown: { inputTokens: 900, cachedInputTokens: 700, outputTokens: 100 } };
   const value = messages("Done", "codex", "plain", 4096, 1, usage)[0];
-  expect(value.text).toBe("Done\n(Codex Worked 1s · session 1.0k ↑0.9k (c0.7k) ↓0.1k)");
+  expect(value.text).toBe("Done\n(Codex Worked 1s · session ↑0.9k (c0.7k) ↓0.1k)");
   expect(spans(value, "italic").at(-1)).toBe(value.text.split("\n").at(-1)!);
 });
 
@@ -300,5 +300,5 @@ test("session counts switch individually to millions while turn counts retain k"
     inputTokens: 1200000, cachedInputTokens: 1000000, outputTokens: 34567,
     sessionBreakdown: { inputTokens: 125229100, cachedInputTokens: 122054700, outputTokens: 301800 },
   })[0];
-  expect(value.text).toBe("Done\n(Codex Worked 1s · ↑1200.0k (c1000.0k) ↓34.6k · session 125.5m ↑125.2m (c122.1m) ↓301.8k)");
+  expect(value.text).toBe("Done\n(Codex Worked 1s · ↑1200.0k (c1000.0k) ↓34.6k · session ↑125.2m (c122.1m) ↓301.8k)");
 });

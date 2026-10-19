@@ -279,7 +279,7 @@ export function messages(
     const session = usage.sessionTokens ?? (usage.scope === "session" ? usage.tokens : undefined);
     if (Number.isSafeInteger(session) && session! >= 0) {
       const detail = parts(usage.sessionBreakdown ?? (usage.scope === "session" ? usage : undefined), true);
-      stats.push(`session ${count(session!, true)}${detail ? " " + detail : ""}`);
+      stats.push(`session ${detail || count(session!, true)}`);
     }
   }
   const footer = source !== "system" && body.text.length && stats.length

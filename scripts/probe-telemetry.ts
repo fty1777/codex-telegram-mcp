@@ -62,7 +62,7 @@ try {
     const millions = after[key] >= 1_000_000;
     return `${(Math.round(after[key] / (millions ? 100_000 : 100)) / 10).toFixed(1)}${millions ? "m" : "k"}`;
   };
-  assert(sent.some(s => s.params.text?.includes(`session ${sessionCount("totalTokens")} ↑${sessionCount("inputTokens")} (c${sessionCount("cachedInputTokens")}) ↓${sessionCount("outputTokens")}`)));
+  assert(sent.some(s => s.params.text?.includes(`session ↑${sessionCount("inputTokens")} (c${sessionCount("cachedInputTokens")}) ↓${sessionCount("outputTokens")}`)));
   await client.call("thread/compact/start", { threadId });
   await finishTurn();
   assert.equal(sent.filter(s => s.params.text === "System\nContext compaction started.").length, 1);
