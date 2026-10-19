@@ -84,10 +84,101 @@ test("review and planning requests record the active turn immediately and stay o
     await f.e.receiveBatch([update(2, "/review")]);
     expect(String(f.e.activeTurn)).toBe("turn");
     await f.e.event({ method: "item/completed", params: { threadId: "thread", turnId: "turn", item: { type: "exitedReviewMode", id: "review-result", review: "Review complete: no findings." } } });
+    await f.e.event({ method: "turn/completed", params: { threadId: "thread", turn: { id: "turn" } } });
     expect(f.calls.at(-1).params.text).toContain("Review complete: no findings.");
     const count = f.calls.length;
     await f.e.event({ method: "item/completed", params: { threadId: "thread", turnId: "turn", item: { type: "exitedReviewMode", id: "review-result", review: "Review complete: no findings." } } });
     expect(f.calls).toHaveLength(count);
+  } finally { f.done(); }
+});
+
+test("final forwarding includes usage reported after the final text and preserves the italic footer", async () => {
+  const f = engineFixture();
+  const event = (method: string, params: any) => f.e.event({ method, params: { threadId: "thread", ...params } });
+  try {
+    await event("thread/tokenUsage/updated", { turnId: "prior", tokenUsage: { total: { totalTokens: 1000 } } });
+    await event("turn/started", { turn: { id: "current", startedAt: Math.floor(Date.now() / 1000) - 10 } });
+    await event("thread/tokenUsage/updated", { turnId: "current", tokenUsage: { total: { totalTokens: 1100 } } });
+    await event("item/completed", { turnId: "current", item: { id: "progress", type: "agentMessage", phase: "commentary", text: "Progress" } });
+    expect(f.calls[0].params.text).toContain(" · 100 tokens)");
+    await event("item/completed", { turnId: "current", item: { id: "final", type: "agentMessage", phase: "final_answer", text: "Done" } });
+    expect(f.calls).toHaveLength(1);
+    await event("thread/tokenUsage/updated", { turnId: "current", tokenUsage: { total: { totalTokens: 1250 } } });
+    await event("turn/completed", { turn: { id: "current", durationMs: 12000 } });
+    expect(f.calls[1].params.text).toBe("Done\n(Codex Worked 12s · 250 tokens)");
+    expect(f.calls[1].params.entities.at(-1).type).toBe("italic");
+    await event("turn/completed", { turn: { id: "current", durationMs: 12000 } });
+    expect(f.calls).toHaveLength(2);
+  } finally { f.done(); }
+});
+
+test("a queued final survives reconnect before first history recovery without stale token statistics", async () => {
+  const f = engineFixture();
+  let recovered: Engine | undefined;
+  const final = { id: "recover-final", type: "agentMessage", phase: "final_answer", text: "Recovered" };
+  try {
+    await f.e.event({ method: "turn/started", params: { threadId: "thread", turn: { id: "recover-turn", startedAt: 1700000000 } } });
+    await f.e.event({ method: "thread/tokenUsage/updated", params: { threadId: "thread", turnId: "recover-turn", tokenUsage: { total: { totalTokens: 1000 } } } });
+    await f.e.event({ method: "item/completed", params: { threadId: "thread", turnId: "recover-turn", item: final } });
+    expect(f.calls).toHaveLength(0);
+    const thread = { status: { type: "idle" }, turns: [{ id: "recover-turn", status: "completed", startedAt: 1700000000, durationMs: 1000, items: [final] }] };
+    f.client.resume = async () => ({ thread });
+    f.client.call = async () => ({ thread });
+    recovered = new Engine(f.s, "test", f.client, f.e.sender);
+    await recovered.attach();
+    await recovered.recover();
+    expect(f.calls).toHaveLength(1);
+    expect(f.calls[0].params.text).toBe("Recovered\n(Codex Worked 1s)");
+    await recovered.recover();
+    expect(f.calls).toHaveLength(1);
+  } finally { recovered?.close(); f.done(); }
+});
+
+test("compaction lifecycle notices are quoted, timed and deduplicated across native and legacy events", async () => {
+  const f = engineFixture();
+  const item = (id: string) => ({ type: "contextCompaction", id });
+  const event = (method: string, value?: any) => f.e.event({ method, params: { threadId: "thread", turnId: "turn", item: value } });
+  try {
+    await event("item/started", item("compact"));
+    const started = f.e.journal.get("compaction:compact").started;
+    await event("item/started", item("compact"));
+    expect(f.e.journal.get("compaction:compact").started).toBe(started);
+    f.e.journal.put("compaction:compact", { started: Date.now() - 12000 });
+    await event("item/completed", item("compact"));
+    await event("thread/compacted");
+    await event("item/completed", item("compact"));
+    expect(f.calls).toHaveLength(2);
+    expect(f.calls[0].params.text).toBe("System\nContext compaction started.");
+    expect(f.calls[1].params.text).toMatch(/^System\nContext compacted\. \(1[2-3]s\)$/);
+    expect(f.calls.every(c => c.params.entities[0].type === "blockquote")).toBe(true);
+    await event("item/started", item("second"));
+    await event("item/completed", item("second"));
+    expect(f.calls).toHaveLength(4);
+  } finally { f.done(); }
+});
+
+test("recovery skips old compactions and never invents elapsed time for a missed completion", async () => {
+  const f = engineFixture();
+  const event = (id: string) => f.e.event({ method: "item/completed", params: { threadId: "thread", turnId: "turn", recovered: true, item: { type: "contextCompaction", id } } });
+  try {
+    await event("old");
+    expect(f.calls).toHaveLength(0);
+    f.e.journal.put("compaction:pending", { started: Date.now() - 90000 });
+    await event("pending");
+    expect(f.calls[0].params.text).toBe("System\nContext compacted.");
+    await event("pending");
+    expect(f.calls).toHaveLength(1);
+  } finally { f.done(); }
+});
+
+test("ambiguous compaction notices are not replayed under another lifecycle event", async () => {
+  const f = engineFixture();
+  let attempts = 0;
+  f.api.call = async () => { attempts++; throw Error("lost reply"); };
+  try {
+    for (const method of ["thread/compacted", "item/completed", "thread/compacted"])
+      await f.e.event({ method, params: { threadId: "thread", turnId: "turn", item: { type: "contextCompaction", id: "compact" } } });
+    expect(attempts).toBe(1);
   } finally { f.done(); }
 });
 

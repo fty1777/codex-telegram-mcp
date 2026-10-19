@@ -47,7 +47,7 @@ const usage: Record<string, string> = {
   skills: "/skills — List enabled skills\n/skills NAME TASK — Invoke a listed skill on a task\nInvoking a skill starts model work. Listing skills does not.",
   plugins: "/plugins — List installed plugins and whether they are enabled\nThis command does not install, remove, or change plugins.",
   ps: "/ps — List background terminals belonging to this session\nThis command does not stop processes.",
-  compact: "/compact — Summarize conversation history to free context\nRun after the current task finishes. Compaction can use the model.",
+  compact: "/compact — Summarize conversation history to free context\nRun after the current task finishes. Compaction can use the model. Start and completion notices appear here; completion includes elapsed time when available.",
   rename: "/rename NAME — Rename this session\nExample: /rename Release preparation",
   status: "/status — Show the Telegram connection and bound Codex session",
   queue: "/queue — Count queued messages for this session",

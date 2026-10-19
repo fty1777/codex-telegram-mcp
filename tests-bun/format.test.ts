@@ -183,6 +183,20 @@ test("progress and final footers use elapsed time without adding headings", () =
   expect(quoted.text).toBe("quoted\n(Codex Worked 12s)");
 });
 
+test("token statistics remain italic, label cumulative fallbacks and fit split message limits", () => {
+  const tokens = { tokens: 12345, scope: "turn" as const };
+  const final = messages("Done", "codex", "markdown", 4096, 12, tokens)[0];
+  expect(final.text).toBe("Done\n(Codex Worked 12s · 12,345 tokens)");
+  expect(spans(final, "italic").at(-1)).toBe("(Codex Worked 12s · 12,345 tokens)");
+  expect(messages("Working", "working", "plain", 4096, 10, { tokens: 1000000, scope: "session" })[0].text)
+    .toContain("session 1,000,000 tokens");
+  expect(messages("Notice", "system", "plain", 4096, 10, tokens)[0].text).not.toContain("tokens");
+  const parts = messages("**hello** 😀 ".repeat(1000), "codex", "markdown", 4096, 75, tokens);
+  for (const part of parts) valid(part, 4096);
+  expect(parts.slice(0, -1).every(p => !p.text.includes("Codex Worked"))).toBe(true);
+  expect(parts.at(-1)!.text).toEndWith("(Codex Worked 1m 15s · 12,345 tokens)");
+});
+
 test("system messages have their heading inside a native quote and no timing footer", () => {
   const value = messages("A system notice", "system", "plain", 4096, 99)[0]!;
   expect(value).toEqual({

@@ -61,6 +61,7 @@ plugin, as described in [setup](setup.md#an-existing-telegram-integration).
 | `bun/telegram.ts` | Bot API transport and durable send receipts |
 | `bun/format.ts` | Markdown conversion, quote styling, and message splitting |
 | `bun/timing.ts` | Persistent task clocks and elapsed-time display |
+| `bun/usage.ts` | Reported token snapshots and per-turn accounting |
 | `bun/pairing.ts` | Pairing proof and shared CLI/tool setup completion |
 | `bun/management.ts` | Bot discovery and session handoff |
 | `bun/manager-install.ts` | Shared plugin installation and upgrades |
@@ -190,7 +191,20 @@ answers are also forwarded; identical explicit text suppresses duplicate forward
 Codex messages have no added headings. Progress and final text end with
 `(Codex Working …)` and `(Codex Worked …)` respectively. Elapsed time uses persisted
 server turn timestamps; no duration is shown when timing is unavailable. Footers
-appear in italic only on the final part of a split message, outside quoted content.
+also include reported token counts. `thread/tokenUsage/updated` cumulative totals
+are differenced against the observed preceding turn's total; `last` is one model
+request and must never be mistaken for a whole turn. Counts include reported
+input and output, including cached input; they are not price estimates. When a
+turn baseline is unknown, the counter is explicitly labeled `session`. No token
+counter is shown before a valid usage snapshot is available. Connection changes
+invalidate stale snapshots and the shared checkpoint, while preserving known
+baselines for a turn that remains active. Counter resets discard its baseline.
+
+Automatic final items observed during an active turn are journaled until
+`turn/completed`, so usage arriving after the final text is included. Recovery can
+flush pending finals without replaying delivered or ambiguous sends. Explicit
+tool sends and progress use the latest reported usage available when sent.
+Footers appear in italic only on the final part of a split message, outside quoted content.
 Offsets and lengths use
 UTF-16 units. Markdown quotes use native `blockquote` entities and retain inline
 formatting. Nested quote levels are flattened into the outer quote. Incompatible
@@ -206,6 +220,13 @@ are never automatically replayed. Retrying the same request ID returns its recor
 outcome. Recognize legacy fingerprints and chunk boundaries during recovery.
 
 ## Diagnostics and lifecycle
+
+Live `contextCompaction` item starts and completions produce quoted system notices.
+Start times and notice reservations persist; confirmed completion can include
+elapsed time. Deprecated `thread/compacted` notifications share the completion
+reservation. Recovered historical compactions stay silent; a previously observed
+start can receive its missed completion notice without inventing a finish time.
+Repeated events and ambiguous delivery are never retried under another event ID.
 
 Keep intermediate tool failures and nonzero shell exits local. The journal stores
 the latest redacted tool error as `last_tool_error`. Codex interprets results and
@@ -247,6 +268,7 @@ some may run a model turn. Telegram is stubbed; they send no Telegram messages.
 
 - `scripts/probe-bun-install.ts` — installation, reinstall, cleanup, and retained settings.
 - `scripts/probe-slash-commands.ts` — real App Server settings and discovery in an isolated thread, without model turns or Telegram requests.
+- `scripts/probe-telemetry.ts` — two short real model turns and one compaction in a disposable thread; checks token footers and compaction notices with Telegram stubbed.
 - `scripts/probe-first-load.ts` — first installation and reload of a disposable session.
 - `scripts/probe-channel.ts`, `scripts/probe-channel-migration.ts` — shared plugin behavior.
 - `scripts/probe-mcp-lifecycle.ts`, `scripts/probe-mcp-plugin.ts` — legacy lifecycle behavior.

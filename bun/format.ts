@@ -1,6 +1,7 @@
 import { Lexer, type Token } from "marked";
 import { decodeHTML } from "entities";
 import { durationText } from "./timing";
+import type { Usage } from "./usage";
 
 export type MessageSource = "system" | "working" | "codex";
 export type TextFormat = "markdown" | "plain";
@@ -252,6 +253,7 @@ export function messages(
   format: TextFormat = source === "system" ? "plain" : "markdown",
   limit = 4096,
   elapsed?: number,
+  usage?: Usage,
 ): RichText[] {
   const body =
     format === "markdown" ? markdown(input) : { text: input, entities: [] };
@@ -261,13 +263,12 @@ export function messages(
     );
   }
   const prefix = source === "system" && body.text.length ? "System\n" : "";
-  const footer =
-    source !== "system" &&
-    body.text.length &&
-    typeof elapsed === "number" &&
-    Number.isFinite(elapsed)
-      ? `(Codex ${source === "working" ? "Working" : "Worked"} ${durationText(elapsed)})`
-      : "";
+  const stats: string[] = [];
+  if (typeof elapsed === "number" && Number.isFinite(elapsed)) stats.push(durationText(elapsed));
+  if (usage && Number.isSafeInteger(usage.tokens) && usage.tokens >= 0)
+    stats.push(`${usage.scope === "session" ? "session " : ""}${usage.tokens.toLocaleString("en-US")} tokens`);
+  const footer = source !== "system" && body.text.length && stats.length
+    ? `(Codex ${source === "working" ? "Working" : "Worked"} ${stats.join(" · ")})` : "";
   const budget = limit - prefix.length - (footer ? footer.length + 1 : 0);
   if (budget < 2) throw Error("Message limit is too small");
   const result: RichText[] = [];

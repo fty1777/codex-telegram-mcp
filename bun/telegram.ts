@@ -15,6 +15,7 @@ import { basename, extname, join, relative, resolve } from "node:path";
 import { Journal, Store, hash, privateDir } from "./state";
 import { messages, type MessageSource, type TextFormat } from "./format";
 import { elapsedSeconds } from "./timing";
+import { turnUsage } from "./usage";
 export class TelegramError extends Error {
   constructor(
     readonly code: number,
@@ -337,6 +338,7 @@ export class Sender {
         format,
         4096,
         elapsedSeconds(this.journal, options.turn_id),
+        turnUsage(this.journal, options.turn_id, c.thread_id),
       );
       if (!parts.some((part) => part.text.trim()))
         throw Error("Text contains no visible content");

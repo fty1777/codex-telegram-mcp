@@ -4,7 +4,8 @@ import { Store, Journal, hash, legacyJSON } from "./state";
 import { Sender, Telegram } from "./telegram";
 import { Interactions } from "./interactions";
 import type { MessageSource } from "./format";
-import { recordTurnTiming } from "./timing";
+import { recordTurnTiming, durationText } from "./timing";
+import { reconnectUsage, startUsage, recordUsage } from "./usage";
 import { HELP, QUERY_METHODS, commandHelp, nativeCommand, parseCommand } from "./commands";
 export { HELP } from "./commands";
 export function diagnostic(v: any, token = "", limit: number | null = 1600) {
@@ -108,7 +109,12 @@ export class Engine {
     );
   }
   waitingForHistory = false;
+  usageAttached = false;
   async attach() {
+    if (!this.usageAttached) {
+      reconnectUsage(this.journal);
+      this.usageAttached = true;
+    }
     let result;
     try {
       result = await this.client.resume(
@@ -162,7 +168,9 @@ export class Engine {
     ).thread;
     const initialized = this.journal.get("history_initialized", false);
     for (const turn of t.turns ?? []) {
-      if (!initialized && turn.status !== "inProgress") {
+      const observed = this.journal.get("pending_final:" + turn.id, []).length ||
+        this.journal.get("compaction_turn:" + turn.id);
+      if (!initialized && turn.status !== "inProgress" && !observed) {
         this.journal.put("historical_turn:" + turn.id, true);
         continue;
       }
@@ -178,7 +186,7 @@ export class Engine {
       for (const item of turn.items ?? [])
         await this.event({
           method: "item/completed",
-          params: { threadId: this.thread, turnId: turn.id, item },
+          params: { threadId: this.thread, turnId: turn.id, item, recovered: true },
         });
       await this.event({
         method: "turn/completed",
@@ -338,6 +346,7 @@ export class Engine {
     }
   }
   started(id: string, turn?: any) {
+    startUsage(this.journal, this.thread, id);
     recordTurnTiming(this.journal, { ...turn, id }, true);
     this.activeTurn = id;
     this.status = "active";
@@ -402,21 +411,30 @@ export class Engine {
     if ("id" in event && (await this.interactions.request(event))) return;
     if (this.journal.get("historical_turn:" + (p.turnId ?? ""))) return;
     if (m === "turn/started") this.started(p.turn.id, p.turn);
+    else if (m === "thread/tokenUsage/updated") recordUsage(this.journal, this.thread, p.turnId, p.tokenUsage);
     else if (m === "turn/completed") {
       recordTurnTiming(this.journal, p.turn);
+      this.journal.put("completed_turn:" + p.turn.id, true);
       this.interactions.expire(p.turn.id);
       if (p.turn.id === this.activeTurn) {
         this.activeTurn = null;
         this.status = "idle";
         this.journal.put("active_turn", null);
       }
+      const pending = this.journal.get("pending_final:" + p.turn.id, []);
+      for (const item of pending) await this.event({ method: "item/completed", params: { threadId: this.thread, turnId: p.turn.id, item } });
+      if (pending.length) this.journal.put("pending_final:" + p.turn.id, []);
       if (p.turn.error)
         await this.say(
           "turn-error-" + p.turn.id,
           "⚠️ Turn failed:\n" +
             diagnostic(p.turn.error, this.store.token(this.instance)),
         );
-    } else if (m === "error")
+    } else if ((m === "item/started" || m === "item/completed") && p.item?.type === "contextCompaction")
+      await this.compaction(p.turnId, p.item.id, m === "item/completed", !p.recovered);
+    else if (m === "thread/compacted")
+      await this.compaction(p.turnId, undefined, true);
+    else if (m === "error")
       await this.say(
         "error-" + this.journal.fingerprint(p),
         (p.willRetry ? "⚠️ Codex is retrying:\n" : "⚠️ Codex error:\n") +
@@ -459,6 +477,14 @@ export class Engine {
           "final_answer",
         ].includes(item.phase)
       ) {
+        if (p.turnId === this.activeTurn && !["commentary", "partial_answer"].includes(item.phase) &&
+            !this.journal.get("completed_turn:" + p.turnId)) {
+          const key = "pending_final:" + p.turnId;
+          const pending = this.journal.get(key, []);
+          if (!pending.some((entry: any) => entry.id === item.id)) pending.push(item);
+          this.journal.put(key, pending);
+          return;
+        }
         if (
           this.journal.get("delivered_item:" + item.id) ||
           this.journal.get(
@@ -487,6 +513,33 @@ export class Engine {
         if (result.status === "sent")
           this.journal.put("delivered_item:" + item.id, true);
       }
+    }
+  }
+  async compaction(turn: string, item: string | undefined, completed: boolean, observed = true) {
+    if (!turn) return;
+    const turnKey = "compaction_turn:" + turn;
+    const current = this.journal.get(turnKey);
+    const id = item ?? current?.id ?? "legacy-" + turn;
+    const key = "compaction:" + id;
+    const state = this.journal.get(key, {});
+    if (!observed && state.started === undefined) return;
+    if (completed) {
+      if (state.completed || (current?.completed && (!item || (current.id === "legacy-" + turn && state.started === undefined)))) return;
+      const elapsed = observed && Number.isFinite(state.started) ? Math.max(0, Math.floor((Date.now() - state.started) / 1000)) : undefined;
+      const text = "Context compacted." + (elapsed === undefined ? "" : ` (${durationText(elapsed)})`);
+      // Reserve before sending; never retry an ambiguous notice under another event ID.
+      this.journal.db.transaction(() => {
+        this.journal.put(key, { ...state, completed: true });
+        this.journal.put(turnKey, { id, completed: true });
+      })();
+      await this.say("compaction-completed-" + id, text);
+    } else {
+      if (state.started !== undefined || state.completed) return;
+      this.journal.db.transaction(() => {
+        this.journal.put(key, { started: Date.now() });
+        this.journal.put(turnKey, { id, completed: false });
+      })();
+      await this.say("compaction-started-" + id, "Context compaction started.");
     }
   }
   close() {

@@ -40,7 +40,7 @@ Objectives must contain 1–4,000 characters. Editing preserves paused status. C
 
 ```text
 /compact — Summarize conversation history to free context
-Run after the current task finishes. Compaction can use the model.
+Run after the current task finishes. Compaction can use the model. Start and completion notices appear here; completion includes elapsed time when available.
 ```
 
 ## /rename

@@ -46,8 +46,10 @@ again or pair again. See [setup and recovery](docs/setup.md) if you get stuck.
 Send messages, photos, and files to Codex through your bot. The paired bot accepts
 only your private messages.
 
-System notices appear as quotes with a **System** heading inside. Codex messages end with elapsed time:
-`(Codex Working 12s)` for progress and `(Codex Worked 1m 20s)` for final replies.
+System notices appear as quotes with a **System** heading inside, including when
+context compaction starts and finishes. Codex messages end with elapsed time and
+reported token usage, for example `(Codex Worked 1m 20s · 12,345 tokens)`.
+`Working` marks progress; `session` marks a session-wide token total.
 
 Replies support text formatting.
 
