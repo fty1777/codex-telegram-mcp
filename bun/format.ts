@@ -265,8 +265,15 @@ export function messages(
   const prefix = source === "system" && body.text.length ? "System\n" : "";
   const stats: string[] = [];
   if (typeof elapsed === "number" && Number.isFinite(elapsed)) stats.push(durationText(elapsed));
-  if (usage && Number.isSafeInteger(usage.tokens) && usage.tokens >= 0)
-    stats.push(`${usage.scope === "session" ? "session " : ""}${usage.tokens.toLocaleString("en-US")} tokens`);
+  if (usage && Number.isSafeInteger(usage.tokens) && usage.tokens >= 0) {
+    const count = (n: number) => n.toLocaleString("en-US");
+    stats.push(`${usage.scope === "session" ? "session " : ""}${count(usage.tokens)} tokens`);
+    if ([usage.inputTokens, usage.cachedInputTokens, usage.outputTokens].every(n => Number.isSafeInteger(n) && n! >= 0)
+        && usage.cachedInputTokens! <= usage.inputTokens!) {
+      stats.push(`in ${count(usage.inputTokens!)} (cached ${count(usage.cachedInputTokens!)})`);
+      stats.push(`out ${count(usage.outputTokens!)}`);
+    }
+  }
   const footer = source !== "system" && body.text.length && stats.length
     ? `(Codex ${source === "working" ? "Working" : "Worked"} ${stats.join(" · ")})` : "";
   const budget = limit - prefix.length - (footer ? footer.length + 1 : 0);

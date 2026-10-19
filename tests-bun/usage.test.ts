@@ -65,3 +65,53 @@ test("invalid snapshots and counter resets never become invented or negative tur
     expect(turnUsage(j, "reset")).toEqual({ tokens: 1100, scope: "session" });
   } finally { f.close(); }
 });
+
+test("component counts use matching turn baselines and cached input remains a subset", () => {
+  const f = fixture(), j = f.journal;
+  const snapshot = (totalTokens: number, inputTokens: number, cachedInputTokens: number, outputTokens: number) =>
+    ({ total: { totalTokens, inputTokens, cachedInputTokens, outputTokens } });
+  try {
+    recordUsage(j, "thread", "prior", snapshot(1000, 900, 700, 100));
+    expect(turnUsage(j, "prior")).toEqual({ tokens: 1000, scope: "session", inputTokens: 900, cachedInputTokens: 700, outputTokens: 100 });
+    startUsage(j, "thread", "next");
+    recordUsage(j, "thread", "next", snapshot(1500, 1300, 1000, 200));
+    recordUsage(j, "thread", "next", snapshot(1500, 1300, 1000, 200));
+    const expected = { tokens: 500, scope: "turn" as const, inputTokens: 400, cachedInputTokens: 300, outputTokens: 100 };
+    expect(turnUsage(j, "next")).toEqual(expected);
+    reconnectUsage(j);
+    startUsage(j, "thread", "next");
+    expect(turnUsage(j, "next")).toBeUndefined();
+    recordUsage(j, "thread", "next", snapshot(1500, 1300, 1000, 200));
+    expect(turnUsage(j, "next")).toEqual(expected);
+    const reopened = new Journal(f.root);
+    try { expect(turnUsage(reopened, "next")).toEqual(expected); }
+    finally { reopened.close(); }
+    // A component reset must not fabricate a delta even when the total grows.
+    recordUsage(j, "thread", "next", snapshot(1600, 1400, 100, 200));
+    expect(turnUsage(j, "next")).toEqual({ tokens: 600, scope: "turn" });
+    recordUsage(j, "thread", "next", snapshot(2600, 2000, 1100, 600));
+    expect(turnUsage(j, "next")).toEqual({ tokens: 1600, scope: "turn" });
+  } finally { f.close(); }
+});
+
+test("old journals and invalid components never mix session components into turn counts", () => {
+  const f = fixture(), j = f.journal;
+  try {
+    recordUsage(j, "thread", "old", { total: { totalTokens: 1000 } });
+    startUsage(j, "thread", "upgrade");
+    recordUsage(j, "thread", "upgrade", { total: { totalTokens: 1500, inputTokens: 1300, cachedInputTokens: 1000, outputTokens: 200 } });
+    expect(turnUsage(j, "upgrade")).toEqual({ tokens: 500, scope: "turn" });
+    startUsage(j, "thread", "next");
+    recordUsage(j, "thread", "next", { total: { totalTokens: 1700, inputTokens: 1450, cachedInputTokens: 1100, outputTokens: 250 } });
+    expect(turnUsage(j, "next")).toEqual({ tokens: 200, scope: "turn", inputTokens: 150, cachedInputTokens: 100, outputTokens: 50 });
+    for (const components of [
+      { inputTokens: 100, cachedInputTokens: 101, outputTokens: 1 },
+      { inputTokens: 100, cachedInputTokens: -1, outputTokens: 1 },
+      { inputTokens: 100, cachedInputTokens: 0 },
+      { inputTokens: 100, cachedInputTokens: 0, outputTokens: "1" },
+    ]) {
+      recordUsage(j, "other", "invalid", { total: { totalTokens: 1000, ...components } });
+      expect(turnUsage(j, "invalid")).toEqual({ tokens: 1000, scope: "session" });
+    }
+  } finally { f.close(); }
+});

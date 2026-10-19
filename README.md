@@ -49,7 +49,8 @@ only your private messages.
 System notices appear as quotes with a **System** heading inside, including when
 context compaction starts and finishes. Codex messages end with elapsed time and
 reported token usage, for example `(Codex Worked 1m 20s · 12,345 tokens)`.
-`Working` marks progress; `session` marks a session-wide token total.
+The footer also shows input, cached input, and output when available. Cached input
+is part of input. `Working` marks progress; `session` marks session-wide counts.
 
 Replies support text formatting.
 

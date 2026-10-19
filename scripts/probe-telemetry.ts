@@ -54,12 +54,16 @@ try {
   assert(Number.isSafeInteger(firstTotal));
   const second = await run(2), secondTotal = usage.filter(u => u.turnId === second).at(-1)?.tokenUsage.total.totalTokens;
   assert(Number.isSafeInteger(secondTotal) && secondTotal > firstTotal);
-  assert(sent.some(s => s.params.text?.includes(`${(secondTotal - firstTotal).toLocaleString("en-US")} tokens)`)));
+  assert(sent.some(s => s.params.text?.includes(`${(secondTotal - firstTotal).toLocaleString("en-US")} tokens`)));
+  const before = usage.filter(u => u.turnId === first).at(-1).tokenUsage.total;
+  const after = usage.filter(u => u.turnId === second).at(-1).tokenUsage.total;
+  const count = (key: string) => (after[key] - before[key]).toLocaleString("en-US");
+  assert(sent.some(s => s.params.text?.includes(`in ${count("inputTokens")} (cached ${count("cachedInputTokens")}) · out ${count("outputTokens")}`)));
   await client.call("thread/compact/start", { threadId });
   await finishTurn();
   assert.equal(sent.filter(s => s.params.text === "System\nContext compaction started.").length, 1);
   assert.equal(sent.filter(s => s.params.text?.startsWith("System\nContext compacted.")).length, 1);
-  console.log(JSON.stringify({ native_usage: "verified", final_turn_delta: "verified", compaction_start_and_completion: "verified", telegram_delivery: "not_run", production_session: "untouched" }));
+  console.log(JSON.stringify({ native_usage: "verified", final_turn_delta: "verified", component_deltas: "verified", compaction_start_and_completion: "verified", telegram_delivery: "not_run", production_session: "untouched" }));
 } finally {
   try { if (threadId) await client.call("thread/archive", { threadId }); }
   finally { engine?.close(); sender?.journal.close(); client.close(); rmSync(root, { recursive: true, force: true }); }

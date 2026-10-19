@@ -257,3 +257,17 @@ test("duration footer stays italic even when body formatting exceeds the entity 
   expect(last.entities.length).toBeLessThanOrEqual(90);
   valid(last, 4096);
 });
+
+test("usage footer distinguishes input, included cached input, and output with the same scope", () => {
+  const usage = { tokens: 12345, scope: "turn" as const, inputTokens: 12000, cachedInputTokens: 10000, outputTokens: 345 };
+  const footer = "(Codex Worked 12s · 12,345 tokens · in 12,000 (cached 10,000) · out 345)";
+  const rendered = messages("Done", "codex", "markdown", 4096, 12, usage)[0];
+  expect(rendered.text).toBe("Done\n" + footer);
+  expect(spans(rendered, "italic").at(-1)).toBe(footer);
+  expect(messages("Done", "codex", "markdown", 4096, 12, { ...usage, scope: "session" })[0].text)
+    .toContain("session 12,345 tokens · in 12,000 (cached 10,000) · out 345");
+  const parts = messages("**hello** 😀 ".repeat(1000), "codex", "markdown", 4096, 12, usage);
+  expect(parts.every(p => p.text.length <= 4096)).toBe(true);
+  expect(parts.slice(0, -1).every(p => !p.text.includes("cached"))).toBe(true);
+  expect(parts.at(-1)!.text).toEndWith(footer);
+});
