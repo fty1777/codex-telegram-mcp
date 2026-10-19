@@ -56,13 +56,17 @@ try {
   assert(Number.isSafeInteger(secondTotal) && secondTotal > firstTotal);
   const before = usage.filter(u => u.turnId === first).at(-1).tokenUsage.total;
   const after = usage.filter(u => u.turnId === second).at(-1).tokenUsage.total;
-  const count = (key: string) => `${(Math.round((after[key] - before[key]) / 100) / 10).toFixed(1)}k`;
-  assert(sent.some(s => s.params.text?.includes(`↑${count("inputTokens")} (c${count("cachedInputTokens")}) ↓${count("outputTokens")}`)));
-  const sessionCount = (key: string) => {
-    const millions = after[key] >= 1_000_000;
-    return `${(Math.round(after[key] / (millions ? 100_000 : 100)) / 10).toFixed(1)}${millions ? "m" : "k"}`;
+  const count = (key: string) => {
+    const delta = after[key] - before[key] - (key === "inputTokens" ? after.cachedInputTokens - before.cachedInputTokens : 0);
+    return `${(Math.round(delta / 100) / 10).toFixed(1)}k`;
   };
-  assert(sent.some(s => s.params.text?.includes(`session ↑${sessionCount("inputTokens")} (c${sessionCount("cachedInputTokens")}) ↓${sessionCount("outputTokens")}`)));
+  assert(sent.some(s => s.params.text?.includes(`↑${count("inputTokens")} c${count("cachedInputTokens")} ↓${count("outputTokens")}`)));
+  const sessionCount = (key: string) => {
+    const value = after[key] - (key === "inputTokens" ? after.cachedInputTokens : 0);
+    const millions = value >= 1_000_000;
+    return `${(Math.round(value / (millions ? 100_000 : 100)) / 10).toFixed(1)}${millions ? "m" : "k"}`;
+  };
+  assert(sent.some(s => s.params.text?.includes(`session ↑${sessionCount("inputTokens")} c${sessionCount("cachedInputTokens")} ↓${sessionCount("outputTokens")}`)));
   await client.call("thread/compact/start", { threadId });
   await finishTurn();
   assert.equal(sent.filter(s => s.params.text === "System\nContext compaction started.").length, 1);

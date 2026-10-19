@@ -56,8 +56,17 @@ export function turnUsage(journal: Journal, turnId?: string, thread?: string): U
   const turn = turnId ?? journal.get("active_turn");
   if (!turn) return;
   const state = journal.get("turn_usage:" + turn);
-  if (!state || (thread && state.thread !== thread) ||
-      state.generation !== journal.get("usage_generation", 0) || !valid(state.total)) return;
+  if (!state || (thread && state.thread !== thread)) return;
+  if (state.generation !== journal.get("usage_generation", 0) || !valid(state.total)) {
+    // Early progress can precede the first usage update. Show only the known
+    // session checkpoint; never invent zero turn usage or revive stale finals.
+    const checkpoint = journal.get("usage_checkpoint");
+    if (turn !== journal.get("active_turn") || state.total !== undefined ||
+        checkpoint?.thread !== state.thread || !valid(checkpoint.total)) return;
+    const current = breakdown(checkpoint.breakdown);
+    return { tokens: checkpoint.total, sessionTokens: checkpoint.total, scope: "session",
+      ...current, ...(current ? { sessionBreakdown: current } : {}) };
+  }
   const current = breakdown(state.breakdown);
   if (valid(state.baseline) && state.total >= state.baseline) {
     const baseline = breakdown(state.baselineBreakdown);

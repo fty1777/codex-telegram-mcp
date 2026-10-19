@@ -196,8 +196,9 @@ are differenced against the observed preceding turn's total; `last` is one model
 request and must never be mistaken for a whole turn. Counts include reported
 input and output, including cached input; they are not price estimates. Input,
 cached input, and output are also differenced individually and displayed as
-`↑N (cN) ↓N`; cached input is a subset of input, not an additional
-count. Components are omitted if their matching baseline is unavailable (for
+`↑N cN ↓N`. The displayed `↑` is input minus cached input, computed before
+rounding; `c` is cached input and `↓` is output. Stored snapshots retain total
+input so both turn and session calculations use the same reported fields. Components are omitted if their matching baseline is unavailable (for
 example, the first turn after upgrading an older journal) or a component resets.
 Session components are never mixed with turn components. Counts use `k` with one
 decimal (1k = 1000 tokens). Individual session counts switch to `m` at 1,000,000
@@ -212,6 +213,9 @@ Automatic final items observed during an active turn are journaled until
 `turn/completed`, so usage arriving after the final text is included. Recovery can
 flush pending finals without replaying delivered or ambiguous sends. Explicit
 tool sends and progress use the latest reported usage available when sent.
+Before an active turn's first usage update, progress may show the last known
+session checkpoint alone. It never presents zero as measured turn usage; a
+connection gap invalidates that checkpoint as usual.
 Footers appear in italic only on the final part of a split message, outside quoted content.
 Offsets and lengths use
 UTF-16 units. Markdown quotes use native `blockquote` entities and retain inline

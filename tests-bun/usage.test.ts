@@ -115,3 +115,21 @@ test("old journals and invalid components never mix session components into turn
     }
   } finally { f.close(); }
 });
+
+
+test("early working messages can show known session usage without inventing a turn count", () => {
+  const f = fixture(), j = f.journal;
+  try {
+    const components = { inputTokens: 900, cachedInputTokens: 700, outputTokens: 100 };
+    recordUsage(j, "thread", "prior", { total: { totalTokens: 1000, ...components } });
+    startUsage(j, "thread", "next");
+    j.put("active_turn", "next");
+    expect(turnUsage(j, "next")).toEqual({ tokens: 1000, sessionTokens: 1000, scope: "session", ...components, sessionBreakdown: components });
+    expect(turnUsage(j, "next", "other")).toBeUndefined();
+    j.put("active_turn", null);
+    expect(turnUsage(j, "next")).toBeUndefined();
+    j.put("active_turn", "next");
+    reconnectUsage(j);
+    expect(turnUsage(j, "next")).toBeUndefined();
+  } finally { f.close(); }
+});

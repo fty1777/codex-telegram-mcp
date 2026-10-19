@@ -48,8 +48,8 @@ only your private messages.
 
 System notices appear as quotes with a **System** heading inside, including when
 context compaction starts and finishes. Codex messages end with elapsed time and
-reported token usage, for example `(Codex Worked 1m 20s · ↑12.0k (c10.0k) ↓0.3k · session ↑99.0k (c90.0k) ↓1.0k)`.
-`↑` is input, `c` is its cached portion, and `↓` is output. Counts use thousands
+reported token usage, for example `(Codex Worked 1m 20s · ↑2.0k c10.0k ↓0.3k · session ↑9.0k c90.0k ↓1.0k)`.
+`↑` is uncached input (input minus cached input), `c` is cached input, and `↓` is output. Counts use thousands
 (`k`) with one decimal; session counts use millions (`m`) from 1000k. `Working` marks progress; `session` shows session input/cache/output when available, or its total if the
 breakdown is unavailable.
 
