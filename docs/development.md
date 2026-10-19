@@ -200,8 +200,9 @@ cached input, and output are also differenced individually and displayed as
 count. Components are omitted if their matching baseline is unavailable (for
 example, the first turn after upgrading an older journal) or a component resets.
 Session components are never mixed with turn components. Counts use `k` with one
-decimal (1k = 1000 tokens); the session total is always appended separately. When
-a turn baseline is unknown, only the `session` total is shown. No token
+decimal (1k = 1000 tokens); the session total and its input/cache/output breakdown
+are always appended separately when reported. Session components do not require a
+turn baseline. When a turn baseline is unknown, only session statistics are shown. No token
 counter is shown before a valid usage snapshot is available. Connection changes
 invalidate stale snapshots and the shared checkpoint, while preserving known
 baselines for a turn that remains active. Counter resets discard its baseline.

@@ -1,7 +1,7 @@
 import type { Journal } from "./state";
 
 type Breakdown = { inputTokens: number; cachedInputTokens: number; outputTokens: number };
-export type Usage = { tokens: number; sessionTokens?: number; scope: "turn" | "session" } & Partial<Breakdown>;
+export type Usage = { tokens: number; sessionTokens?: number; sessionBreakdown?: Breakdown; scope: "turn" | "session" } & Partial<Breakdown>;
 const fields = ["inputTokens", "cachedInputTokens", "outputTokens"] as const;
 function breakdown(value: any): Breakdown | undefined {
   if (!value || !fields.every(field => valid(value[field])) || value.cachedInputTokens > value.inputTokens) return;
@@ -63,7 +63,7 @@ export function turnUsage(journal: Journal, turnId?: string, thread?: string): U
     const baseline = breakdown(state.baselineBreakdown);
     const delta = current && baseline && fields.every(field => current[field] >= baseline[field])
       ? breakdown(Object.fromEntries(fields.map(field => [field, current[field] - baseline[field]]))) : undefined;
-    return { tokens: state.total - state.baseline, sessionTokens: state.total, scope: "turn", ...delta };
+    return { tokens: state.total - state.baseline, sessionTokens: state.total, scope: "turn", ...delta, ...(current ? { sessionBreakdown: current } : {}) };
   }
-  return { tokens: state.total, sessionTokens: state.total, scope: "session", ...current };
+  return { tokens: state.total, sessionTokens: state.total, scope: "session", ...current, ...(current ? { sessionBreakdown: current } : {}) };
 }

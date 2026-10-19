@@ -59,6 +59,8 @@ try {
   const after = usage.filter(u => u.turnId === second).at(-1).tokenUsage.total;
   const count = (key: string) => `${(Math.round((after[key] - before[key]) / 100) / 10).toFixed(1)}k`;
   assert(sent.some(s => s.params.text?.includes(`↑${count("inputTokens")} (cache ${count("cachedInputTokens")}) ↓${count("outputTokens")}`)));
+  const sessionCount = (key: string) => `${(Math.round(after[key] / 100) / 10).toFixed(1)}k`;
+  assert(sent.some(s => s.params.text?.includes(`session ${sessionCount("totalTokens")} ↑${sessionCount("inputTokens")} (cache ${sessionCount("cachedInputTokens")}) ↓${sessionCount("outputTokens")}`)));
   await client.call("thread/compact/start", { threadId });
   await finishTurn();
   assert.equal(sent.filter(s => s.params.text === "System\nContext compaction started.").length, 1);
