@@ -396,13 +396,22 @@ export class Engine {
           });
         } catch (e) {
           if (
-            !(e instanceof RpcError) ||
-            e.code !== -32600 ||
-            e.message !== "no active turn to steer"
-          )
-            throw e;
-          result = await this.client.call("turn/start", params);
-          this.started(result.turn.id, result.turn);
+            e instanceof RpcError &&
+            e.message === "cannot steer a compact turn"
+          ) {
+            // The steer was explicitly rejected, so it is safe to enqueue the
+            // same input once. Codex drains its queue after compaction finishes.
+            result = await this.client.call("thread/queue/add", params);
+          } else {
+            if (
+              !(e instanceof RpcError) ||
+              e.code !== -32600 ||
+              e.message !== "no active turn to steer"
+            )
+              throw e;
+            result = await this.client.call("turn/start", params);
+            this.started(result.turn.id, result.turn);
+          }
         }
       } else {
         result = await this.client.call("turn/start", params);
@@ -548,6 +557,7 @@ export class Engine {
             requestId: `telegram-${this.config.bot_id}-${key}`,
           },
         )) ?? "Unknown command.\n" + HELP;
+    if (reply === "") return { status: "sent" };
     return await this.say(
       "command-" + key,
       diagnostic(reply, this.store.token(this.instance), null),
@@ -799,9 +809,10 @@ export class Engine {
         this.journal.put(turnKey, { id, completed: true });
       })();
       const timer = this.journal.get("compaction_timer");
-      if (timer?.id === id)
+      if (timer?.id === id) {
         this.journal.put("compaction_timer", { ...timer, finalText: text });
-      await this.say("compaction-completed-" + id, text);
+        await this.refreshCompaction();
+      } else await this.say("compaction-completed-" + id, text);
     } else {
       if (state.started !== undefined || state.completed) return;
       this.journal.db.transaction(() => {

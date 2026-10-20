@@ -293,13 +293,17 @@ test("compaction lifecycle notices are quoted, timed and deduplicated across nat
   try {
     await event("item/started", item("compact"));
     const started = f.e.journal.get("compaction:compact").started;
+    const message = f.e.journal.get("compaction_timer").message;
     await event("item/started", item("compact"));
     expect(f.e.journal.get("compaction:compact").started).toBe(started);
     f.e.journal.put("compaction:compact", { started: Date.now() - 12000 });
     await event("item/completed", item("compact"));
     await event("thread/compacted");
     await event("item/completed", item("compact"));
+    await f.e.refreshCompaction(Date.now() + 30000);
     expect(f.calls).toHaveLength(2);
+    expect(f.calls[1].method).toBe("editMessageText");
+    expect(f.calls[1].params.message_id).toBe(message);
     expect(f.calls[0].params.text).toBe("System\nContext compaction started.");
     expect(f.calls[1].params.text).toMatch(
       /^System\nContext compacted\. \(1[2-3]s\)$/,
@@ -309,6 +313,7 @@ test("compaction lifecycle notices are quoted, timed and deduplicated across nat
     ).toBe(true);
     await event("item/started", item("second"));
     await event("item/completed", item("second"));
+    await f.e.refreshCompaction(Date.now() + 60000);
     expect(f.calls).toHaveLength(4);
   } finally {
     f.done();
@@ -556,7 +561,9 @@ test("compact refuses active work; rename preserves text and both operate on the
     await f.e.receiveBatch([update(2, "/compact now")]);
     await f.e.receiveBatch([update(3, "/rename")]);
     expect(f.rpc).toHaveLength(0);
+    const notices = f.calls.length;
     await f.e.receiveBatch([update(4, "/compact")]);
+    expect(f.calls).toHaveLength(notices);
     await f.e.receiveBatch([update(5, "/rename My  session")]);
     expect(f.rpc).toEqual([
       { method: "thread/compact/start", params: { threadId: "thread" } },
@@ -808,6 +815,32 @@ test("idle starts once, busy steers consecutive messages", async () => {
     f.done();
   }
 });
+test("compact steer rejection queues each input once without a warning", async () => {
+  const f = engineFixture();
+  try {
+    f.e.started("compact");
+    f.client.call = async (method: string, params: any) => {
+      f.rpc.push({ method, params });
+      if (method === "turn/steer")
+        throw new RpcError({ code: -32600, message: "cannot steer a compact turn" });
+      return { id: "queued" };
+    };
+    expect(await f.e.receiveBatch([update()])).toBe("accepted");
+    expect(await f.e.receiveBatch([update()])).toBe("accepted");
+    expect(await f.e.receiveBatch([update(2, "next")])).toBe("accepted");
+    expect(f.rpc.map((r) => r.method)).toEqual([
+      "turn/steer", "thread/queue/add", "turn/steer", "thread/queue/add",
+    ]);
+    expect(f.rpc[1].params.input).toEqual(f.rpc[0].params.input);
+    expect(f.rpc[1].params.clientUserMessageId).toBe(f.rpc[0].params.clientUserMessageId);
+    expect(f.rpc[3].params.clientUserMessageId).not.toBe(f.rpc[1].params.clientUserMessageId);
+    expect(f.e.activeTurn).toBe("compact");
+    expect(f.calls).toHaveLength(0);
+  } finally {
+    f.done();
+  }
+});
+
 test("only explicit no-active rejection allows steer fallback", async () => {
   const f = engineFixture();
   try {
@@ -1544,6 +1577,7 @@ test("compaction timer edits the confirmed start message and stops on completion
     f.e.journal.put("working_edit_after", 0);
     await f.e.refreshCompaction(timer.started + 16000);
     expect(f.calls.at(-1).params.text).toContain("Context compacted.");
+    expect(f.calls.filter((call) => !call.method.startsWith("edit"))).toHaveLength(1);
     expect(f.e.journal.get("compaction_timer")).toBeNull();
     const finalCount = f.calls.length;
     await f.e.refreshCompaction(timer.started + 17000);

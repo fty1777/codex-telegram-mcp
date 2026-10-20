@@ -181,7 +181,8 @@ export async function nativeCommand(
     if (active)
       return "Codex is working. Use /compact after the current task finishes.";
     await client.call("thread/compact/start", { threadId });
-    return "Conversation compaction started.";
+    // The compaction lifecycle supplies the single, timed status message.
+    return "";
   }
   if (command === "/rename") {
     if (!args) return "Use /rename NAME to rename this session.";
