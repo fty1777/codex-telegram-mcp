@@ -1,8 +1,27 @@
-# Codex Telegram MCP
+<div align="center">
+  <img src="assets/logo.png" alt="Codex Telegram MCP logo" width="160" />
+  <h1>Codex Telegram MCP</h1>
+  <p>Continue your Codex conversation from Telegram.</p>
+  <p>
+    <a href="https://github.com/fty1777/codex-telegram-mcp/actions/workflows/check.yml"><img src="https://github.com/fty1777/codex-telegram-mcp/actions/workflows/check.yml/badge.svg?branch=main" alt="Checks" /></a>
+    <a href="https://github.com/fty1777/codex-telegram-mcp/releases/latest"><img src="https://img.shields.io/github/v/release/fty1777/codex-telegram-mcp?color=229ED9" alt="Latest release" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License: Apache-2.0" /></a>
+    <img src="https://img.shields.io/badge/platform-Linux-555" alt="Platform: Linux" />
+  </p>
+  <p>
+    <a href="#get-started">Get started</a> ·
+    <a href="docs/commands.md">Commands</a> ·
+    <a href="docs/setup.md">Setup &amp; recovery</a>
+  </p>
+</div>
 
-Continue your Codex conversation from Telegram. Send messages, photos, and files;
-get progress updates and replies in the same chat. Your terminal and Telegram use
-the same Codex session.
+Send messages, photos, and files; get progress updates and replies in the same
+chat. Your terminal and Telegram use the **same Codex session**.
+
+| Stay connected | Stay informed | Stay in control |
+| --- | --- | --- |
+| Continue from your phone | Formatted replies and live tool activity | Shared CLI commands and settings |
+| Send photos and files | Token usage, context and goal status | Answer questions and approve actions |
 
 ## File limits
 
@@ -46,26 +65,35 @@ again or pair again. See [setup and recovery](docs/setup.md) if you get stuck.
 Send messages, photos, and files to Codex through your bot. The paired bot accepts
 only your private messages.
 
-Replies use Telegram Rich Messages. System notices appear as quotes with a **System** heading inside, including when
-context compaction starts and finishes, with a running timer. Codex messages have a native footer with elapsed time and
-reported token usage, for example `Codex Worked 1m 20s · ↑2.0k c10.0k ↓0.3k · session ↑9.0k c90.0k ↓1.0k`.
-`↑` is uncached input (input minus cached input), `c` is cached input, and `↓` is output. Counts use thousands
-(`k`) with one decimal; all counts use millions (`m`) from 1000k. `Working` marks progress; `session` shows session input/cache/output when available, or its total if the
-breakdown is unavailable. The latest Working message refreshes every 10 seconds
-while Codex is working, subject to Telegram rate limits. Tool-content changes
-update immediately, with the footer included in the same edit. When the task ends,
-Working footers are removed; progress text and the final Worked footer remain.
-When reported, `ctx 123.4k/258.4k 45%` shows context tokens, window size,
-and used percentage. The footer also shows the current model, reasoning effort, goal state and unanswered question
-count when present.
+Replies support formatting, live tool activity, and a status footer showing elapsed
+time, token usage, context usage, model and goal state when available. Context
+compaction has a timed system notice; messages received during compaction wait in
+the queue.
 
-Replies support text formatting. Inline code up to 256 characters appears as a
-button that copies its text; longer inline code and code blocks keep code formatting. Tool activity updates together with the live Working footer;
-long tool histories continue in additional messages.
-Use `/activity keep` to retain it, `/activity off` to hide it, or
-`/activity transient` to remove tool details when the task ends (default).
-Choice questions appear with copyable IDs and `/answer` commands. Use `/questions`
-to list questions awaiting a reply; this does not use model tokens.
+Use `/activity keep`, `/activity off`, or `/activity transient` (default) to choose
+whether tool details remain after a task. Use `/questions` to find questions
+awaiting your reply, without using model tokens.
+
+<details>
+<summary>Reading the status footer</summary>
+
+`Codex Worked 1m 20s · ↑2.0k c10.0k ↓0.3k · session ↑9.0k c90.0k ↓1.0k`
+
+- `↑` is uncached input, `c` is cached input, and `↓` is output.
+- Counts use `k` for thousands and `m` from one million, with one decimal.
+- `session` shows session usage; a total is used if the breakdown is unavailable.
+- `ctx 123.4k/258.4k 45%` shows context tokens, window size and used percentage.
+- Model, reasoning effort, goal state and unanswered question count appear when available.
+
+The Working timer refreshes every 10 seconds, subject to Telegram rate limits.
+Tool-content changes update immediately in the same message. Working footers are
+removed when a task ends; progress text and the final Worked footer remain.
+
+Inline code up to 256 characters appears as a copy button; longer inline code and
+code blocks keep code formatting. Long tool histories continue in additional
+messages. System notices use a quote with a **System** heading.
+
+</details>
 
 Send `/help` for commands or `/help goal` for usage and examples. Help is returned
 directly without invoking a model. See the [command reference](docs/commands.md)
