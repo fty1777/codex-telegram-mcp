@@ -4,7 +4,7 @@ import { z } from "zod";
 import { Store, atomic } from "./state";
 import { join } from "node:path";
 import { Sender } from "./telegram";
-import { pluginEnabled, runWorker, healthyReceiverHandoff } from "./worker";
+import { pluginEnabled, runWorker } from "./worker";
 import { controlMcp, McpWorkerOwner } from "./lifecycle";
 import { diagnostic } from "./engine";
 import { callingSession, listBots, changeBinding } from "./management";
@@ -35,8 +35,6 @@ export async function mcp(store: Store, name: string) {
     },
   );
   const owner = new McpWorkerOwner(c.thread_id, async (signal) => {
-    const runId = Date.now();
-    let notified = false;
     for (let attempt = 0; !signal.aborted; attempt++) {
       try {
         await runWorker(store, name, signal);
@@ -45,15 +43,6 @@ export async function mcp(store: Store, name: string) {
         if (signal.aborted) return;
         const error = diagnostic(String(e), store.token(name));
         console.error(error);
-        if (!notified && !healthyReceiverHandoff(store, name, e)) {
-          notified = true;
-          await sender
-            .send("mcp-worker-failure-" + runId, {
-              source: "system",
-              text: "Your Telegram connection was interrupted. Reconnecting automatically; no action is needed right now.",
-            })
-            .catch(() => {});
-        }
         const delay = Math.min(30000, 1000 * 2 ** Math.min(attempt, 5));
         for (
           let elapsed = 0;

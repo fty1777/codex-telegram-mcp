@@ -3,7 +3,6 @@ import { rmSync } from "node:fs";
 import { Store, atomic, now } from "./state";
 import { identity, lock, sleep } from "./process";
 import { pluginEnabled } from "./worker";
-import { Sender } from "./telegram";
 import { diagnostic } from "./engine";
 export async function supervise(s: Store, n: string) {
   const p = s.instance(n),
@@ -12,10 +11,8 @@ export async function supervise(s: Store, n: string) {
     child: ReturnType<typeof Bun.spawn> | undefined,
     failures = 0,
     leaseFailures = 0;
-  const sender = new Sender(s, n);
   const stop = () => {
     stopping = true;
-    sender.api.abort();
     if (child && child.exitCode === null) child.kill("SIGTERM");
   };
   process.on("SIGTERM", stop);
@@ -69,13 +66,6 @@ export async function supervise(s: Store, n: string) {
         updated: now(),
         error: detail,
       });
-      if (failures === 1)
-        await sender
-          .send("supervisor-" + process.pid + "-" + Date.now(), {
-            source: "system",
-            text: "Your Telegram connection was interrupted. Reconnecting automatically; no action is needed right now.",
-          })
-          .catch(() => {});
       const until =
         Date.now() + Math.min(30000, 1000 * 2 ** Math.min(failures, 5));
       while (!stopping && Date.now() < until) await sleep(100);
@@ -97,7 +87,6 @@ export async function supervise(s: Store, n: string) {
       updated: now(),
       runtime: "bun",
     });
-    sender.journal.close();
     unlock();
   }
 }

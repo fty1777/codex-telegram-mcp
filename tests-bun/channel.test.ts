@@ -206,61 +206,7 @@ test("native tools render progress, literal edits and captions through the commo
   }
 });
 
-test("a healthy receiver holding the lock during handoff does not produce a failure message", async () => {
-  const { identity, LockBusyError } = await import("../bun/process");
-  const { healthyReceiverHandoff } = await import("../bun/worker");
-  const root = mkdtempSync(join(tmpdir(), "telegram-handoff-notice-"));
-  const s = new Store(root);
-  s.configure(
-    "sample",
-    "123456:fixture",
-    { id: 123456, username: "sample" },
-    42,
-    "session",
-  );
-  atomic(join(s.instance("sample"), "config.json"), {
-    ...s.read("sample"),
-    autostart: true,
-  });
-  atomic(
-    join(s.instance("sample"), "worker-process.json"),
-    identity(process.pid),
-  );
-  const health = {
-    pid: process.pid,
-    updated: Date.now() / 1000,
-    telegram: { status: "connected" },
-  };
-  atomic(join(s.instance("sample"), "health.json"), health);
-  const busy = new LockBusyError();
-  const host = new ChannelHost(s, async () => {
-    throw busy;
-  });
-  const calls: string[] = [];
-  host.sender("sample", { threadId: "session" }).api.call = async (method) => {
-    calls.push(method);
-    return { message_id: 1, chat: { id: 42 } };
-  };
-  try {
-    expect(healthyReceiverHandoff(s, "sample", busy)).toBe(true);
-    expect(
-      healthyReceiverHandoff(s, "sample", Error("unrelated failure")),
-    ).toBe(false);
-    await host.connect("sample", { threadId: "session" });
-    await Bun.sleep(20);
-    expect(calls).toHaveLength(0);
-    atomic(join(s.instance("sample"), "health.json"), {
-      ...health,
-      updated: 0,
-    });
-    expect(healthyReceiverHandoff(s, "sample", busy)).toBe(false);
-  } finally {
-    await host.close();
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("receiver failure notices explain recovery without exposing internal exceptions", async () => {
+test("receiver retries recover without sending stale connection notices", async () => {
   const root = mkdtempSync(join(tmpdir(), "telegram-plain-notice-"));
   const s = new Store(root);
   s.configure(
@@ -274,8 +220,9 @@ test("receiver failure notices explain recovery without exposing internal except
     ...s.read("sample"),
     autostart: true,
   });
+  let attempts = 0;
   const host = new ChannelHost(s, async () => {
-    throw Error("INTERNAL_EXCEPTION_DETAIL");
+    if (++attempts === 1) throw Error("INTERNAL_EXCEPTION_DETAIL");
   });
   const messages: any[] = [];
   host.sender("sample", { threadId: "session" }).api.call = async (
@@ -288,10 +235,10 @@ test("receiver failure notices explain recovery without exposing internal except
   try {
     await host.connect("sample", { threadId: "session" });
     await Bun.sleep(20);
-    expect(messages).toHaveLength(1);
-    expect(messages[0].text).toContain("Reconnecting automatically");
-    expect(messages[0].text).not.toContain("INTERNAL_EXCEPTION_DETAIL");
-    expect(messages[0].text).not.toContain("⚠️");
+    expect(messages).toHaveLength(0);
+    for (let i = 0; i < 40 && attempts < 2; i++) await Bun.sleep(50);
+    expect(attempts).toBe(2);
+    expect(messages).toHaveLength(0);
   } finally {
     await host.close();
     rmSync(root, { recursive: true, force: true });

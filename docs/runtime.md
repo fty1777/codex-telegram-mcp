@@ -201,8 +201,9 @@ Repeated events and ambiguous delivery are never retried under another event ID.
 
 Keep intermediate tool failures and nonzero shell exits local. The journal stores
 the latest redacted tool error as `last_tool_error`. Codex interprets results and
-communicates actionable blockers. Reconnection notices use plain language and do
-not expose internal exceptions.
+communicates actionable blockers. Automatic reconnection retries stay silent in Telegram; errors remain in local
+diagnostics and connection status. Actionable notices, such as a conflicting
+bot connection that stops receiving, remain visible.
 
 A new receiver waits up to five seconds for the outgoing receiver's lock. Continued
 contention retries quietly while a live receiver has a connected heartbeat less

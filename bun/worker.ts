@@ -18,24 +18,8 @@ import {
   identity,
   waitForReceiverLock,
   sleep,
-  status,
-  LockBusyError,
 } from "./process";
 
-export function healthyReceiverHandoff(
-  store: Store,
-  name: string,
-  error: unknown,
-) {
-  if (!(error instanceof LockBusyError)) return false;
-  const state = status(store, name);
-  return Boolean(
-    state.process &&
-      state.health?.pid === state.process.pid &&
-      state.health?.telegram?.status === "connected" &&
-      now() - state.health.updated < 15,
-  );
-}
 export function pluginEnabled(config: any) {
   if (!config.plugin) return true;
   const p = config.plugin;
@@ -347,7 +331,6 @@ export async function runWorker(
         }
       })(),
     );
-    let startupNotified = false;
     while (!stopped) {
       try {
         await connect();
@@ -355,13 +338,6 @@ export async function runWorker(
       } catch (e) {
         if (stopped) break;
         console.error(diagnostic(String(e), store.token(name)));
-        if (!startupNotified) {
-          await sender.send("startup-" + started, {
-            source: "system",
-            text: "Your Codex conversation is temporarily unavailable. Reconnecting automatically; no action is needed right now.",
-          });
-          startupNotified = true;
-        }
         await wait(2000);
       }
     }

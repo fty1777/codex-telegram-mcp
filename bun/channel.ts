@@ -6,7 +6,7 @@ import { Store, atomic, readJSON } from "./state";
 import { managementServer } from "./manager";
 import { McpWorkerOwner, controlMcp } from "./lifecycle";
 import { callingSession } from "./management";
-import { runWorker, pluginEnabled, healthyReceiverHandoff } from "./worker";
+import { runWorker, pluginEnabled } from "./worker";
 import { diagnostic } from "./engine";
 import { Sender } from "./telegram";
 import { lock } from "./process";
@@ -42,7 +42,6 @@ export class ChannelHost {
     if (!owner) {
       owner = new McpWorkerOwner(c.thread_id, async (signal) => {
         const thread = this.store.read(name).thread_id;
-        let notified = false;
         for (let attempt = 0; !signal.aborted; attempt++) {
           try {
             await this.run(this.store, name, signal);
@@ -64,15 +63,6 @@ export class ChannelHost {
               return;
             const detail = diagnostic(String(error), this.store.token(name));
             console.error(detail);
-            if (!notified && !healthyReceiverHandoff(this.store, name, error)) {
-              notified = true;
-              await this.sender(name, { threadId: thread })
-                .send("receiver-failure-" + Date.now(), {
-                  source: "system",
-                  text: "Your Telegram connection was interrupted. Reconnecting automatically; no action is needed right now.",
-                })
-                .catch(() => {});
-            }
             const delay = Math.min(30000, 1000 * 2 ** Math.min(attempt, 5));
             for (
               let elapsed = 0;
