@@ -43,7 +43,7 @@ function fixture() {
   }));
   const client: any = {
     events: [],
-    call: async () => ({ thread: { turns } }),
+    call: async () => ({ data: turns, thread: { turns } }),
     resume: async () => ({ thread: { status: { type: "idle" }, turns: [] } }),
     send() {},
     close() {},
@@ -105,12 +105,12 @@ test("replacing a recovery waits for cancellation before starting the next scan"
   const gate = new Promise<void>((r) => (release = r));
   f.client.call = async () => {
     await gate;
-    return { thread: { turns: f.turns } };
+    return { data: f.turns, thread: { turns: f.turns } };
   };
   const next: any = {
     call: async () => {
       newScans++;
-      return { thread: { turns: [] } };
+      return { data: [], thread: { turns: [] } };
     },
   };
   try {
@@ -138,7 +138,7 @@ test("simultaneous recovery starts create only the newest scan", async () => {
     const client = (id: number): any => ({
       call: async () => {
         scanned.push(id);
-        return { thread: { turns: [] } };
+        return { data: [], thread: { turns: [] } };
       },
     });
     await Promise.all([recovery.start(client(1)), recovery.start(client(2))]);
@@ -325,7 +325,7 @@ test("cancelled history scans cannot enqueue replies from a stale Engine", async
   const gate = new Promise<void>((r) => (release = r));
   f.client.call = async () => {
     await gate;
-    return { thread: { turns: f.turns } };
+    return { data: f.turns, thread: { turns: f.turns } };
   };
   try {
     await recovery.start(f.client);
@@ -373,6 +373,7 @@ test("blocked historical HTTP does not block polling, owner delivery, or another
       }),
       call: async (method: string, params: any) => {
         if (method === "thread/goal/get") return { goal: null };
+        if (method === "thread/turns/list") return { data: params.threadId === "thread" ? f.turns : [] };
         if (method === "thread/read")
           return {
             thread: {

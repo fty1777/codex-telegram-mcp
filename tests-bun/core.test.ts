@@ -268,7 +268,7 @@ test("a queued final survives reconnect before first history recovery without st
       ],
     };
     f.client.resume = async () => ({ thread });
-    f.client.call = async () => ({ thread });
+    f.client.call = async () => ({ thread, data: thread.turns });
     recovered = new Engine(f.s, "test", f.client, f.e.sender);
     await recovered.attach();
     await recovered.recover();
@@ -1710,4 +1710,16 @@ test("statusline follows model settings events and ignores foreign threads", asy
   } finally {
     f.done();
   }
+});
+
+test("an active session without a known turn queues input rather than starting a conflicting turn", async () => {
+  const f = engineFixture();
+  try {
+    f.e.status = "active";
+    f.e.activeTurn = null;
+    expect(await f.e.receiveBatch([update()])).toBe("accepted");
+    expect(await f.e.receiveBatch([update()])).toBe("accepted");
+    expect(f.rpc.map((r) => r.method)).toEqual(["thread/queue/add"]);
+    expect(f.rpc[0].params.clientUserMessageId).toBeString();
+  } finally { f.done(); }
 });

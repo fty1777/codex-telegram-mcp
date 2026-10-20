@@ -145,6 +145,7 @@ export class Engine {
   waitingForHistory = false;
   usageAttached = false;
   async attach() {
+    this.status = "connecting";
     const attachedAt = Date.now();
     if (!this.usageAttached) {
       reconnectUsage(this.journal);
@@ -189,16 +190,14 @@ export class Engine {
     } catch {
       this.journal.put("goal_state", null);
     }
-    this.status = result.thread.status?.type ?? "unknown";
+    const attachedStatus = result.thread.status?.type ?? "unknown";
     let turns = result.thread.turns ?? [];
-    if (this.status === "active" && !turns.length)
-      turns =
-        (
-          await this.client.call("thread/read", {
-            threadId: this.thread,
-            includeTurns: true,
-          })
-        ).thread.turns ?? [];
+    if (attachedStatus === "active" && !turns.some((t: any) => t.status === "inProgress")) {
+      for await (const page of this.turnPages("desc", "notLoaded")) {
+        turns = page;
+        break;
+      }
+    }
     this.activeTurn =
       [...turns].reverse().find((t) => t.status === "inProgress")?.id ?? null;
     this.recoveryBoundary = {
@@ -213,67 +212,91 @@ export class Engine {
     this.journal.put("active_turn", this.activeTurn);
     const active = turns.find((turn: any) => turn.id === this.activeTurn);
     if (active) recordTurnTiming(this.journal, active, true);
+    this.status = attachedStatus;
+  }
+  // Keep each page small even when individual turns contain large tool output.
+  async *turnPages(direction: "asc" | "desc", itemsView: "full" | "notLoaded", signal?: AbortSignal): AsyncGenerator<any[]> {
+    let cursor: string | undefined;
+    const seen = new Set<string>();
+    do {
+      if (signal?.aborted) return;
+      let page;
+      try {
+        page = await this.client.call("thread/turns/list", {
+          threadId: this.thread, sortDirection: direction, itemsView,
+          limit: 1, ...(cursor ? { cursor } : {}),
+        });
+      } catch (e) {
+        // Older servers have no pagination. Their full response remains bounded
+        // by the transport limit; never retry it after a transport failure.
+        if (cursor || !(e instanceof RpcError) || e.code !== -32601) throw e;
+        const result = await this.client.call("thread/read", { threadId: this.thread, includeTurns: true });
+        yield result.thread.turns ?? [];
+        return;
+      }
+      if (!Array.isArray(page.data)) throw Error("Invalid turn page from Codex");
+      yield page.data;
+      cursor = page.nextCursor ?? undefined;
+      if (cursor && seen.has(cursor)) throw Error("Codex returned a repeated history cursor");
+      if (cursor) seen.add(cursor);
+    } while (cursor);
   }
   async recover(signal?: AbortSignal, boundary?: RecoveryBoundary) {
     if (this.waitingForHistory || signal?.aborted) return;
-    const t = (
-      await this.client.call("thread/read", {
-        threadId: this.thread,
-        includeTurns: true,
-      })
-    ).thread;
     const initialized = this.journal.get("history_initialized", false);
-    for (const turn of t.turns ?? []) {
-      if (signal?.aborted) return;
-      await Bun.sleep(0);
-      if (signal?.aborted) return;
-      const observed =
-        this.journal.get("pending_final:" + turn.id, []).length ||
-        this.journal.get("compaction_turn:" + turn.id);
-      const live =
-        this.journal.get("live_turn:" + turn.id) ||
-        (boundary &&
-          (turn.id === boundary.activeTurn ||
-            (typeof turn.startedAt === "number" &&
-              turn.startedAt >= Math.floor(boundary.since / 1000))));
-      if (!initialized && turn.status !== "inProgress" && !observed && !live) {
-        this.journal.put("historical_turn:" + turn.id, true);
-        continue;
-      }
-      if (this.journal.get("historical_turn:" + turn.id)) continue;
-      recordTurnTiming(this.journal, turn);
-      if (turn.status === "inProgress") {
-        for (const item of turn.items ?? [])
-          if (item.type === "agentMessage" && item.questions?.length)
-            await this.questions.offer(item, turn.id);
-        if (!initialized)
-          for (const item of (turn.items ?? []).slice(0, -1))
-            if (
-              item.type === "agentMessage" &&
-              (!boundary || boundary.items.has(item.id))
-            )
-              this.journal.put("delivered_item:" + item.id, true);
-        continue;
-      }
-      for (const item of turn.items ?? []) {
+    for await (const turns of this.turnPages("asc", "full", signal)) {
+      for (const turn of turns) {
         if (signal?.aborted) return;
         await Bun.sleep(0);
         if (signal?.aborted) return;
+        const observed =
+          this.journal.get("pending_final:" + turn.id, []).length ||
+          this.journal.get("compaction_turn:" + turn.id);
+        const live =
+          this.journal.get("live_turn:" + turn.id) ||
+          (boundary &&
+            (turn.id === boundary.activeTurn ||
+              (typeof turn.startedAt === "number" &&
+                turn.startedAt >= Math.floor(boundary.since / 1000))));
+        if (!initialized && turn.status !== "inProgress" && !observed && !live) {
+          this.journal.put("historical_turn:" + turn.id, true);
+          continue;
+        }
+        if (this.journal.get("historical_turn:" + turn.id)) continue;
+        recordTurnTiming(this.journal, turn);
+        if (turn.status === "inProgress") {
+          for (const item of turn.items ?? [])
+            if (item.type === "agentMessage" && item.questions?.length)
+              await this.questions.offer(item, turn.id);
+          if (!initialized)
+            for (const item of (turn.items ?? []).slice(0, -1))
+              if (
+                item.type === "agentMessage" &&
+                (!boundary || boundary.items.has(item.id))
+              )
+                this.journal.put("delivered_item:" + item.id, true);
+          continue;
+        }
+        for (const item of turn.items ?? []) {
+          if (signal?.aborted) return;
+          await Bun.sleep(0);
+          if (signal?.aborted) return;
+          await this.event({
+            method: "item/completed",
+            params: {
+              threadId: this.thread,
+              turnId: turn.id,
+              item,
+              recovered: true,
+            },
+          });
+        }
+        if (signal?.aborted) return;
         await this.event({
-          method: "item/completed",
-          params: {
-            threadId: this.thread,
-            turnId: turn.id,
-            item,
-            recovered: true,
-          },
+          method: "turn/completed",
+          params: { threadId: this.thread, turn },
         });
       }
-      if (signal?.aborted) return;
-      await this.event({
-        method: "turn/completed",
-        params: { threadId: this.thread, turn },
-      });
     }
     if (!signal?.aborted) this.journal.put("history_initialized", true);
   }
@@ -386,7 +409,7 @@ export class Engine {
       };
       let result;
       submitting = true;
-      if (this.config.delivery_mode === "queue")
+      if (this.config.delivery_mode === "queue" || (this.status === "active" && !this.activeTurn))
         result = await this.client.call("thread/queue/add", params);
       else if (this.activeTurn) {
         try {

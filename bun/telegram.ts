@@ -52,6 +52,7 @@ export function within(path: string, root: string) {
 export class Telegram {
   controllers = new Set<AbortController>();
   private abortGeneration = 0;
+  private closed = false;
   constructor(
     readonly token: string,
     readonly base = "https://api.telegram.org",
@@ -89,12 +90,17 @@ export class Telegram {
     for (const c of this.controllers) c.abort();
     this.controllers.clear();
   }
+  close() {
+    this.closed = true;
+    this.abort();
+  }
   async call(
     method: string,
     params: any,
     timeout = 10000,
     upload?: { field: string; path: string; name: string },
   ): Promise<any> {
+    if (this.closed) throw Error("Telegram transport is closed; request was not sent");
     // Retry only side-effect-free metadata reads. Polling has its own loop;
     // sends must retain their unknown-delivery semantics.
     const generation = this.abortGeneration;
@@ -126,6 +132,11 @@ export class Telegram {
     const ctrl = new AbortController();
     this.controllers.add(ctrl);
     const timer = setTimeout(() => ctrl.abort(), timeout);
+    let cancelled!: () => void;
+    const cancellation = new Promise<never>((_resolve, reject) => {
+      cancelled = () => reject(Error("Request cancelled or deadline exceeded"));
+      ctrl.signal.addEventListener("abort", cancelled, { once: true });
+    });
     try {
       let body: BodyInit,
         headers: Record<string, string> = {};
@@ -139,11 +150,18 @@ export class Telegram {
         body = JSON.stringify(params);
         headers["Content-Type"] = "application/json";
       }
-      const response = await fetch(
-        this.base + "/bot" + this.token + "/" + method,
-        { method: "POST", headers, body, signal: ctrl.signal },
-      );
-      const result: any = await response.json();
+      // Bound body decoding too: aborting a fetch alone is not proof that its
+      // response/body promise settles. No journal or retry runs in this task.
+      const result: any = await Promise.race([
+        (async () => {
+          const response = await fetch(
+            this.base + "/bot" + this.token + "/" + method,
+            { method: "POST", headers, body, signal: ctrl.signal },
+          );
+          return await response.json();
+        })(),
+        cancellation,
+      ]);
       if (result?.ok === false)
         throw new TelegramError(
           result.error_code,
@@ -164,6 +182,7 @@ export class Telegram {
       );
     } finally {
       clearTimeout(timer);
+      ctrl.signal.removeEventListener("abort", cancelled);
       this.controllers.delete(ctrl);
     }
   }

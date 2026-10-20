@@ -14,6 +14,13 @@ export function listBots(store: Store) {
     const receiver = runtime.worker ?? runtime.process;
     const receiverHealth = receiver && runtime.health?.pid === receiver.pid
       ? runtime.health : null;
+    const receiverStatus = receiverHealth?.pipeline?.status === "stalled"
+      ? "stalled"
+      : receiverHealth?.status === "disconnected"
+        ? "reconnecting"
+        : receiverHealth?.status === "connecting"
+          ? "starting"
+          : receiverHealth?.telegram?.status ?? (receiver ? "starting" : "stopped");
     let pairingConnectivity = "not_tested";
     let pending = 0,
       held = 0;
@@ -85,13 +92,19 @@ export function listBots(store: Store) {
       enabled: Boolean(config.enabled),
       running: Boolean(runtime.process),
       pairing_connectivity: pairingConnectivity,
-      receiver_status:
-        receiverHealth
-          ? (receiverHealth.telegram?.status ?? "starting")
-          : "stopped",
+      receiver_status: receiverStatus,
+      telegram_status: receiverHealth?.telegram?.status ?? "stopped",
+      pipeline: receiverHealth?.pipeline ? {
+        status: receiverHealth.pipeline.status,
+        current_operation: receiverHealth.pipeline.current_operation,
+        last_failed_operation: receiverHealth.pipeline.last_failed_operation,
+        last_failure_at: receiverHealth.pipeline.last_failure_at,
+        operation_started: receiverHealth.pipeline.operation_started,
+        last_loop_progress: receiverHealth.pipeline.last_loop_progress,
+      } : null,
       setup_stage: !config.thread_id
         ? "paired_unbound"
-        : receiverHealth?.telegram?.status === "connected"
+        : receiverStatus === "connected"
           ? "receiver_connected"
           : "paired_receiver_not_ready",
       recovery: receiverHealth?.recovery

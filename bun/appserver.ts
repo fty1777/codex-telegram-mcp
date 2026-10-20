@@ -20,6 +20,7 @@ export class AppServer implements Client {
   pending = new Map<
     number,
     {
+      method: string;
       resolve: (v: any) => void;
       reject: (e: Error) => void;
       timer: ReturnType<typeof setTimeout>;
@@ -37,8 +38,19 @@ export class AppServer implements Client {
       join(homedir(), ".codex/app-server-control/app-server-control.sock");
     if (endpoint && !endpoint.startsWith("unix://"))
       throw Error("Only local Unix endpoints supported");
-    this.ws = new WebSocket("ws+unix://" + path + ":/");
+    const configured = Number(process.env.CODEX_TELEGRAM_MAX_PAYLOAD_MIB ?? 256);
+    if (!Number.isInteger(configured) || configured < 1 || configured > 512)
+      throw Error("CODEX_TELEGRAM_MAX_PAYLOAD_MIB must be an integer from 1 to 512");
+    this.ws = new WebSocket("ws+unix://" + path + ":/", { maxPayload: configured * 1024 * 1024 });
     this.ws.on("message", (data) => {
+      // Bun's ws compatibility layer may not enforce the constructor option.
+      // Check decoded messages too, before allocating a JSON object graph.
+      const bytes = Array.isArray(data) ? data.reduce((n, b) => n + b.length, 0) : data.byteLength;
+      if (bytes > configured * 1024 * 1024) {
+        this.fail("WS_ERR_UNSUPPORTED_MESSAGE_LENGTH: Codex response exceeded the configured payload limit");
+        this.ws.terminate();
+        return;
+      }
       try {
         const m = JSON.parse(data.toString());
         if ("id" in m && !("method" in m)) {
@@ -53,8 +65,11 @@ export class AppServer implements Client {
         this.close();
       }
     });
-    this.ws.on("close", () => this.fail());
-    this.ws.on("error", () => this.fail());
+    this.ws.on("close", (code) => this.fail("WebSocket closed (" + code + ")"));
+    this.ws.on("error", (error: any) => this.fail(
+      error.code === "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH"
+        ? "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH: Codex response exceeded the configured payload limit"
+        : "WebSocket transport error"));
   }
   static async connect(endpoint?: string, timeout = 15000) {
     const c = new AppServer(endpoint, timeout);
@@ -96,7 +111,7 @@ export class AppServer implements Client {
         this.pending.delete(id);
         reject(new DeliveryUnknown(method + ": timed out; delivery unknown"));
       }, this.timeout);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { method, resolve, reject, timer });
       try {
         this.send({ id, method, params });
       } catch (e) {
@@ -123,17 +138,17 @@ export class AppServer implements Client {
       return this.call("thread/resume", { ...options, threadId });
     }
   }
-  fail() {
+  fail(reason = "Connection lost") {
     if (this.closed) return;
     this.closed = true;
     for (const p of this.pending.values()) {
       clearTimeout(p.timer);
       p.reject(
-        new DeliveryUnknown("Connection lost; reconcile before retrying"),
+        new DeliveryUnknown(p.method + ": " + reason + "; reconcile before retrying"),
       );
     }
     this.pending.clear();
-    this.events.push({ method: "bridge/disconnected", params: {} });
+    this.events.push({ method: "bridge/disconnected", params: { reason } });
   }
   close() {
     this.fail();

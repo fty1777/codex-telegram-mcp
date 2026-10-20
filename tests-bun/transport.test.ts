@@ -344,3 +344,22 @@ test("closing Telegram during read retry backoff prevents another request", asyn
     server.stop(true);
   }
 });
+
+test("Telegram deadlines include response bodies that ignore abort, without retrying sends", async () => {
+  const original = globalThis.fetch;
+  let calls = 0;
+  const api = new Telegram("123456:fixture");
+  try {
+    globalThis.fetch = (async () => {
+      calls++;
+      return { json: () => new Promise(() => {}) } as any;
+    }) as any;
+    await expect(api.call("sendRichMessage", { chat_id: 1 }, 20)).rejects.toThrow("delivery unknown");
+    expect(calls).toBe(1);
+    const pending = api.call("sendRichMessage", { chat_id: 1 }, 10000);
+    api.close();
+    await expect(pending).rejects.toThrow("delivery unknown");
+    await expect(api.call("sendRichMessage", { chat_id: 1 })).rejects.toThrow("request was not sent");
+    expect(calls).toBe(2);
+  } finally { globalThis.fetch = original; api.close(); }
+});

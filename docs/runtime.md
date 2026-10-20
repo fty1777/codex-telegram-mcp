@@ -23,6 +23,30 @@ successful refresh request alone does not prove recovery.
 An older bot can work without that historical check. Use receiver health to assess
 the current connection.
 
+## Large sessions and receiver progress
+
+Attachment resumes metadata only and queries the latest turn with
+`thread/turns/list` (`itemsView: notLoaded`). History recovery uses ascending,
+full-item pages of one turn, preserving existing delivery receipts and allowing
+cancellation between pages. It does not hydrate the entire thread on servers
+with pagination. Only an explicit method-not-supported response permits the
+legacy full-history fallback; transport failures never trigger that fallback.
+A single exceptionally large turn can still exceed the response limit.
+
+The App Server response limit defaults to 256 MiB. Set
+`CODEX_TELEGRAM_MAX_PAYLOAD_MIB` in the MCP process environment to an integer
+between 1 and 512 to change it. The transport checks decoded message size before
+JSON parsing as well as configuring the WebSocket limit. The decoded check also
+covers Bun versions whose WebSocket implementation ignores `maxPayload`; it does
+not prevent those versions from buffering the incoming frame. Oversized responses
+retain the RPC method and transport error code in private diagnostics.
+
+Receiver readiness remains `starting` until attachment completes, even if
+Telegram polling already works. Health includes the current pipeline operation,
+its start time and the last progress time. Stalled operations cancel their
+transports before the MCP owner retries. Output backlog is drained in bounded
+time slices so it cannot indefinitely postpone accepted incoming messages.
+
 ## Ownership and pairing
 
 One Codex-owned MCP host manages multiple independently bound bot receivers. Tool

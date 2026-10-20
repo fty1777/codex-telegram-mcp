@@ -336,3 +336,15 @@ test("workers require MCP configuration and an owning lifecycle signal", async (
     expect(existsSync(join(store.instance("sample"), "worker-process.json"))).toBe(false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("event draining yields with backlog retained instead of starving the inbox", async () => {
+  const { drainOutputEvents } = await import("../bun/worker");
+  const events = [1, 2, 3];
+  const seen: number[] = [];
+  await drainOutputEvents(events, async (event) => {
+    seen.push(event);
+    events.push(event + 3);
+  }, 0);
+  expect(seen).toEqual([1]);
+  expect(events).toEqual([2, 3, 4]);
+});

@@ -13,6 +13,7 @@ import { HistoryRecovery } from "./recovery";
 import { Store, Journal, atomic, now, privateDir, readJSON } from "./state";
 import { Telegram, TelegramError, Sender } from "./telegram";
 import { COMMANDS } from "./commands";
+import { WorkerProgress } from "./worker-progress";
 export { COMMANDS } from "./commands";
 import {
   identity,
@@ -44,10 +45,14 @@ export function pluginEnabled(config: any) {
 export async function drainOutputEvents(
   events: any[],
   handle: (event: any) => Promise<boolean | void>,
+  budget = 250,
 ) {
   const count = events.length;
-  for (let i = 0; i < count && events.length; i++)
+  const deadline = Date.now() + budget;
+  for (let i = 0; i < count && events.length; i++) {
     if ((await handle(events.shift())) === false) return;
+    if (Date.now() >= deadline) return;
+  }
 }
 export async function guard(client: AppServer, thread: string) {
   const t = (
@@ -138,10 +143,11 @@ export async function runWorker(
     stopReason ??= reason;
     stopped = true;
     recovery.cancel();
-    api.abort();
-    sender.api.abort();
+    api.close();
+    sender.api.close();
     client?.close();
   };
+  const progress = new WorkerProgress(() => shutdown("operation_timeout"));
   const onTerm = () => shutdown("signal:SIGTERM");
   const onInterrupt = () => shutdown("signal:SIGINT");
   const onAbort = () => shutdown("session_host_aborted");
@@ -188,7 +194,8 @@ export async function runWorker(
         started,
         updated: now(),
         runtime: "bun",
-        status: engine?.status ?? "connecting",
+        status: progress.snapshot().status === "stalled" ? "stalled" : engine?.status ?? "connecting",
+        pipeline: progress.snapshot(),
         thread_id: config.thread_id,
         active_turn: engine?.activeTurn ?? null,
         telegram: pollHealth,
@@ -335,7 +342,7 @@ export async function runWorker(
     );
     while (!stopped) {
       try {
-        await connect();
+        await progress.run("connect", connect);
         break;
       } catch (e) {
         if (stopped) break;
@@ -343,7 +350,10 @@ export async function runWorker(
         await wait(2000);
       }
     }
-    if (stopped) return;
+    if (stopped) {
+      if (stopReason === "operation_timeout") throw Error("Worker operation timed out");
+      return;
+    }
     let failed = false;
     let nextRecoveryAttempt = Date.now() + 5000;
     let nextHistoryAttempt = 0;
@@ -351,7 +361,7 @@ export async function runWorker(
       if (engine!.waitingForHistory && Date.now() >= nextHistoryAttempt) {
         nextHistoryAttempt = Date.now() + 1000;
         try {
-          await engine!.attach();
+          await progress.run("attach", () => engine!.attach());
           if (!engine!.waitingForHistory) await recovery.start(client!, engine!.recoveryBoundary);
         } catch {
           engine!.status = "disconnected";
@@ -359,7 +369,7 @@ export async function runWorker(
       }
       if (engine!.status === "disconnected") {
         try {
-          await connect();
+          await progress.run("reconnect", connect);
           failed = false;
         } catch (e) {
           if (stopped) break;
@@ -383,7 +393,7 @@ export async function runWorker(
         Date.now() >= nextRecoveryAttempt
       ) {
         nextRecoveryAttempt = Date.now() + 5000;
-        await recovery.start(client!, engine!.recoveryBoundary);
+        await progress.run("recover_history", () => recovery.start(client!, engine!.recoveryBoundary));
       }
       await drainOutputEvents(client!.events, async (event) => {
         if (stopped) return false;
@@ -396,49 +406,45 @@ export async function runWorker(
           shutdown("session_" + event.method.split("/")[1]);
           return false;
         }
-        await engine!.event(event);
+        await progress.run("codex_event", () => engine!.event(event), 120000);
         if (event.params?.threadId === config.thread_id) lastEvent = now();
       });
       if (stopped) break;
       if (engine!.status === "disconnected") continue;
-      if (client!.events.length) continue;
       engine!.syncQuestionStatus();
-      await sender
-        .cleanWorking()
-        .catch((error) =>
-          console.error(diagnostic(String(error), store.token(name))),
-        );
-      await engine!
-        .refreshCompaction()
-        .catch((error) =>
-          console.error(diagnostic(String(error), store.token(name))),
-        );
-      await sender
-        .refreshActivityPages()
-        .catch((error) =>
-          console.error(diagnostic(String(error), store.token(name))),
-        );
-      await engine!.activity
-        .flush()
-        .catch((error) =>
-          console.error(diagnostic(String(error), store.token(name))),
-        );
-      // Network-bound maintenance may have allowed more assistant output in.
-      // Publish that output before forwarding a newer user message.
-      if (client!.events.length) continue;
+      // A bounded event snapshot must give the inbox a turn even if new events
+      // keep arriving. Optional message maintenance must not go ahead of input.
       const batch = journal.readyBatch();
       if (batch.length) {
         processing = true;
         try {
-          const result = await engine!.receiveBatch(batch);
+          const result = await progress.run("deliver_input", () => engine!.receiveBatch(batch), 300000);
           if (result === "paused") shutdown("instance_paused");
           else journal.handled(batch.map((u: any) => u.update_id));
         } finally {
           processing = false;
         }
       }
+      if (stopped) break;
+      await progress.run("clean_working", () => sender.cleanWorking())
+        .catch((error) =>
+          console.error(diagnostic(String(error), store.token(name))),
+        );
+      await progress.run("refresh_compaction", () => engine!.refreshCompaction())
+        .catch((error) =>
+          console.error(diagnostic(String(error), store.token(name))),
+        );
+      await progress.run("refresh_activity_pages", () => sender.refreshActivityPages())
+        .catch((error) =>
+          console.error(diagnostic(String(error), store.token(name))),
+        );
+      await progress.run("flush_activity", () => engine!.activity.flush())
+        .catch((error) =>
+          console.error(diagnostic(String(error), store.token(name))),
+        );
       await wait(50);
     }
+    if (stopReason === "operation_timeout") throw Error("Worker operation timed out");
   } catch (error) {
     stopDetail = diagnostic(String(error), store.token(name));
     shutdown("worker_error");
@@ -455,6 +461,7 @@ export async function runWorker(
       updated: now(),
       started,
       thread_id: config.thread_id,
+      pipeline: progress.snapshot(),
       telegram: pollHealth,
       recovery: recovery.summary(),
       inbound: journal.get("last_inbound"),
