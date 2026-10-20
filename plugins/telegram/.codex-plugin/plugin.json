@@ -1,6 +1,6 @@
 {
-  "name": "telegram",
-  "version": "0.7.5",
+  "name": "codex-telegram-mcp",
+  "version": "0.7.6",
   "description": "Continue your Codex conversation from Telegram.",
   "author": {
     "name": "fty1777"

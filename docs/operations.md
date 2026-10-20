@@ -30,8 +30,8 @@ one terminal may leave the connection running.
 For a marketplace installation, run:
 
 ```sh
-codex plugin marketplace upgrade codex-telegram
-codex plugin add telegram@codex-telegram
+codex plugin marketplace upgrade fty1777
+codex plugin add codex-telegram-mcp@fty1777
 ```
 
 Existing bots and pairing are retained. A brief reconnection can occur during an
@@ -48,8 +48,8 @@ Removing the plugin disconnects all bots while retaining their settings for late
 reinstallation. Your Codex conversations and projects are preserved.
 
 ```sh
-codex plugin remove telegram@codex-telegram
-codex plugin marketplace remove codex-telegram
+codex plugin remove codex-telegram-mcp@fty1777
+codex plugin marketplace remove fty1777
 ```
 
 ## Terminal commands

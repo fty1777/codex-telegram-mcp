@@ -9,7 +9,7 @@ import { ChannelHost, attachSharedPlugin } from "../bun/channel";
 test("marketplace pairing attaches without a legacy install and preserves existing receipts", async () => {
   const root = mkdtempSync(join(tmpdir(), "telegram-marketplace-state-"));
   const store = new Store(root);
-  const plugin = { id: "telegram@codex-telegram", root: "/fixture/plugin" };
+  const plugin = { id: "codex-telegram-mcp@fty1777", root: "/fixture/plugin" };
   store.configure(
     "sample",
     "123456:fixture",
@@ -48,7 +48,7 @@ test("marketplace pairing attaches without a legacy install and preserves existi
 test("marketplace host requires both session ownership and its own plugin binding", async () => {
   const root = mkdtempSync(join(tmpdir(), "telegram-marketplace-owner-"));
   const store = new Store(root);
-  const plugin = { id: "telegram@codex-telegram", root: "/fixture/plugin" };
+  const plugin = { id: "codex-telegram-mcp@fty1777", root: "/fixture/plugin" };
   store.configure(
     "sample",
     "123456:fixture",
@@ -291,7 +291,7 @@ test("plugin attachment retires an owned independent process without losing pair
     atomic(join(path, "worker-process.json"), identity(child.pid));
     await expect(start(store, "sample", true)).rejects.toThrow("Independent receivers are no longer supported");
     expect(child.exitCode).toBeNull();
-    const plugin = { id: "telegram@codex-telegram", root: "/fixture/plugin" };
+    const plugin = { id: "codex-telegram-mcp@fty1777", root: "/fixture/plugin" };
     expect(() => attachSharedPlugin(store, "sample", plugin)).toThrow("Retired receiver is still active");
     const config = await prepareSharedPlugin(store, "sample", plugin);
     await child.exited;

@@ -11,12 +11,12 @@ test("rescue resolves marketplace packages without a legacy receipt and rejects 
   const store = new Store(join(temporary, "state"));
   const root = join(temporary, "plugin");
   mkdirSync(join(root, ".codex-plugin"), { recursive: true });
-  atomic(join(root, ".codex-plugin/plugin.json"), { name: "telegram", mcpServers: "./.mcp.json" });
+  atomic(join(root, ".codex-plugin/plugin.json"), { name: "codex-telegram-mcp", mcpServers: "./.mcp.json" });
   atomic(join(root, ".mcp.json"), { mcpServers: { telegram: { command: "bun", args: ["${PLUGIN_ROOT}/bridge.js", "plugin", "--plugin-root", "${PLUGIN_ROOT}"] } } });
   writeFileSync(join(root, "bridge.js"), "// fixture");
   store.configure("sample", "123456:fixture", { id: 123456, username: "fixture" }, 42, "session");
   try {
-    const plugin = { id: "telegram@codex-telegram", root };
+    const plugin = { id: "codex-telegram-mcp@fty1777", root };
     expect(rescuePlugin(store, "sample", root, "/not-installed")).toEqual(plugin);
     expect(rescuePlugin(store, "sample", undefined, root)).toEqual(plugin);
     expect(() => rescuePlugin(store, "sample", undefined, "/not-installed")).toThrow("--plugin-root");
@@ -80,7 +80,7 @@ test.each(["source", "bundle"])("%s rescue CLI attaches marketplace identity whe
     expect(result.status).toBe("configured");
     expect(result.connection.status).toBe("mcp-unavailable");
     expect(result.notification.status).toBe("sent");
-    expect(store.read("sample").plugin).toEqual({ id: "telegram@codex-telegram", root });
+    expect(store.read("sample").plugin).toEqual({ id: "codex-telegram-mcp@fty1777", root });
     expect(store.read("sample").owner_id).toBe(42);
     expect(readFileSync(wire, "utf8")).toContain("The receiver is not ready");
     expect(readFileSync(wire, "utf8")).toContain("do not pair again");

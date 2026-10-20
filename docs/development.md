@@ -17,7 +17,7 @@ checkout or `node_modules` after installation.
 ## Marketplace package
 
 The catalog is `.agents/plugins/marketplace.json`; the stable selector is
-`telegram@codex-telegram`. Its package lives in `plugins/telegram/` and uses the
+`codex-telegram-mcp@fty1777`. Its package lives in `plugins/telegram/` and uses the
 portable `plugin.json` and `mcp.json` manifests. Codex resolves the plugin working
 directory; Bun then runs `./bridge.js` from there (verified on Codex 0.163.0). No launcher argument depends
 on compatibility-format variable substitution. The `plugin` CLI entry

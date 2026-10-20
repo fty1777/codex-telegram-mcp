@@ -35,7 +35,7 @@ Install the plugin:
 
 ```sh
 codex plugin marketplace add fty1777/codex-telegram-mcp
-codex plugin add telegram@codex-telegram
+codex plugin add codex-telegram-mcp@fty1777
 ```
 
 Then, in the Codex conversation you want to use:

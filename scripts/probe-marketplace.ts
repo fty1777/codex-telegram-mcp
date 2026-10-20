@@ -42,7 +42,7 @@ async function call(method: string, params: any) {
 }
 const hotLoad = process.argv.includes("--hot-load");
 async function install() {
-  const installed = await codex("add", "telegram@codex-telegram");
+  const installed = await codex("add", "codex-telegram-mcp@fty1777");
   if (!installed.installedPath || !existsSync(join(installed.installedPath, "bridge.js")))
     throw Error("Plugin runtime was not installed");
 }
@@ -100,7 +100,7 @@ try {
   if (!JSON.stringify(status).includes("send_text")) throw Error("Codex did not load Telegram tools");
   if (existsSync(join(home, ".local/share/codex-telegram/manager-installation.json"))) throw Error("Unexpected legacy install dependency");
   await call("thread/archive", { threadId: thread.id });
-  await codex("remove", "telegram@codex-telegram");
+  await codex("remove", "codex-telegram-mcp@fty1777");
   console.log(JSON.stringify({ installation: "verified", mode: hotLoad ? "hot_load" : "fresh_session", codex_managed_tool_loading: "verified", removal: "verified", model_turns: 0, pairing: "not_run", telegram_delivery: "not_run" }));
 } finally {
   if (app) { app.kill(); await app.exited; }

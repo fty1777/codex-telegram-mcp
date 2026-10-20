@@ -1,9 +1,9 @@
 {
-  "name": "codex-telegram",
-  "interface": { "displayName": "Codex Telegram" },
+  "name": "fty1777",
+  "interface": { "displayName": "fty1777 Plugins" },
   "plugins": [
     {
-      "name": "telegram",
+      "name": "codex-telegram-mcp",
       "source": { "source": "local", "path": "./plugins/telegram" },
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"

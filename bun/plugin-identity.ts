@@ -20,9 +20,9 @@ export function marketplacePlugin(root: string) {
         JSON.stringify(mcp.args) === JSON.stringify(["./bridge.js", "plugin", "--plugin-root", "."])
       : manifest.mcpServers === "./.mcp.json" &&
         JSON.stringify(mcp?.args) === JSON.stringify(["${PLUGIN_ROOT}/bridge.js", "plugin", "--plugin-root", "${PLUGIN_ROOT}"]);
-    if (manifest.name !== "telegram" || mcp?.command !== "bun" || !launcher ||
+    if (manifest.name !== "codex-telegram-mcp" || mcp?.command !== "bun" || !launcher ||
         !existsSync(join(root, "bridge.js"))) throw new PluginIdentityError();
-    return { id: "telegram@codex-telegram", root };
+    return { id: "codex-telegram-mcp@fty1777", root };
   } catch {
     throw new PluginIdentityError();
   }
@@ -33,7 +33,7 @@ export function rescuePlugin(store: Store, name: string, explicit: string | unde
   if (existsSync(join(entryDirectory, "plugin.json")) || existsSync(join(entryDirectory, ".codex-plugin/plugin.json")))
     return marketplacePlugin(entryDirectory);
   const configured = store.read(name).plugin;
-  if (configured?.id === "telegram@codex-telegram")
+  if (configured?.id === "codex-telegram-mcp@fty1777")
     return marketplacePlugin(configured.root);
   if (existsSync(join(store.root, "manager-installation.json"))) return undefined;
   throw new PluginIdentityError();
