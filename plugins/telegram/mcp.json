@@ -1,0 +1,16 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "telegram": {
+      "type": "stdio",
+      "command": "bun",
+      "args": [
+        "./bridge.js",
+        "plugin",
+        "--plugin-root",
+        "."
+      ],
+      "cwd": "${PLUGIN_ROOT}"
+    }
+  }
+}

@@ -9,7 +9,7 @@ import { callingSession } from "./management";
 import { runWorker, pluginEnabled } from "./worker";
 import { diagnostic } from "./engine";
 import { Sender } from "./telegram";
-import { lock } from "./process";
+import { lock, live, stop } from "./process";
 
 /** One Codex-owned MCP host per session, with independently owned bot workers. */
 export class ChannelHost {
@@ -118,6 +118,14 @@ export class ChannelHost {
 
 export type SharedPlugin = { id: string; root: string };
 
+/** Drain retired receivers before attaching the only supported lifecycle. */
+export async function prepareSharedPlugin(store: Store, name: string, plugin?: SharedPlugin, activate = true) {
+  const current = store.read(name);
+  if (current.lifecycle !== "mcp" || live(join(store.instance(name), "process.json")))
+    await stop(store, name);
+  return attachSharedPlugin(store, name, plugin, activate);
+}
+
 export function attachSharedPlugin(
   store: Store,
   name: string,
@@ -132,6 +140,9 @@ export function attachSharedPlugin(
   const release = lock(join(store.instance(name), "management.lock"));
   try {
     const current = store.read(name);
+    if (live(join(store.instance(name), "process.json")) ||
+        (current.lifecycle !== "mcp" && live(join(store.instance(name), "worker-process.json"))))
+      throw Error("Retired receiver is still active; migrate through the Telegram plugin before attaching.");
     if (current.removing || current.binding_change)
       throw Error("Bot binding is changing; inspect list_bots before retrying");
     const config = {
@@ -153,11 +164,11 @@ export function channelServer(store: Store, providedHost?: ChannelHost, plugin?:
   const host = providedHost ?? new ChannelHost(store, runWorker, plugin);
   const server = managementServer(store, {
     install: async (_s, name) => {
-      const config = attachSharedPlugin(store, name, plugin);
+      const config = await prepareSharedPlugin(store, name, plugin);
       return host.connect(name, { threadId: config.thread_id });
     },
     start: async (_s, name) => {
-      if (plugin) attachSharedPlugin(store, name, plugin, false);
+      if (plugin) await prepareSharedPlugin(store, name, plugin, false);
       return host.connect(name, { threadId: store.read(name).thread_id });
     },
     uninstall: async (_s, name) => {

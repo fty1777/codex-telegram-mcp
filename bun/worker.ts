@@ -84,12 +84,14 @@ export async function guard(client: AppServer, thread: string) {
 export async function runWorker(
   store: Store,
   name: string,
-  signal?: AbortSignal,
+  signal: AbortSignal,
 ) {
-  if (signal?.aborted) return;
+  if (!signal) throw Error("Receiver requires a Codex-owned lifecycle signal");
+  if (signal.aborted) return;
   const path = store.instance(name),
     config = store.read(name);
   if (!config.enabled || !config.thread_id || config.binding_change) return;
+  if (config.lifecycle !== "mcp") throw Error("Only Codex-managed MCP receivers are supported");
   if (config.telegram_api?.mode === "local")
     throw Error(
       "Local Bot API migration is deferred; keep this instance on its previous runtime until local mode is supported",
@@ -103,7 +105,7 @@ export async function runWorker(
   try {
     const current = store.read(name);
     if (
-      signal?.aborted ||
+      signal.aborted ||
       !current.enabled ||
       current.autostart === false ||
       current.binding_change ||
@@ -145,7 +147,7 @@ export async function runWorker(
   const onAbort = () => shutdown("session_host_aborted");
   process.on("SIGTERM", onTerm);
   process.on("SIGINT", onInterrupt);
-  signal?.addEventListener("abort", onAbort, { once: true });
+  signal.addEventListener("abort", onAbort, { once: true });
   atomic(join(path, "worker-process.json"), identity(process.pid));
   let bg: Promise<any>[] = [];
   const wait = async (ms: number) => {
@@ -391,10 +393,6 @@ export async function runWorker(
           ) &&
           event.params?.threadId === config.thread_id
         ) {
-          atomic(join(path, "session-active.json"), {
-            thread_id: config.thread_id,
-            active: false,
-          });
           shutdown("session_" + event.method.split("/")[1]);
           return false;
         }
@@ -467,7 +465,7 @@ export async function runWorker(
     sender.journal.close();
     process.off("SIGTERM", onTerm);
     process.off("SIGINT", onInterrupt);
-    signal?.removeEventListener("abort", onAbort);
+    signal.removeEventListener("abort", onAbort);
     rmSync(join(path, "worker-process.json"), { force: true });
     atomic(join(path, "health.json"), {
       pid: null,

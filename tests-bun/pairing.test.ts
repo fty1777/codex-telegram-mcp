@@ -16,10 +16,12 @@ import {
   redeemPairing,
   cancelPairing,
   completePairing,
+  watchPairing,
+  pairingStatus,
 } from "../bun/pairing";
 import { listBots } from "../bun/management";
 
-test.each(["connected", "awaiting-session-reload", "failed"])(
+test.each(["connected", "awaiting-session-reload", "failed", "identity-failed", "connecting", "wrapped-connected", "mcp-startup-failed", "mcp-unavailable"])(
   "pairing completion journals its acknowledgement when receiver startup is %s",
   async (startup) => {
     const f = fixture();
@@ -51,6 +53,11 @@ test.each(["connected", "awaiting-session-reload", "failed"])(
         starts++;
         expect(f.store.read("sample").owner_id).toBe(42);
         if (startup === "failed") throw Error("fixture startup failure");
+        if (startup === "identity-failed") {
+          const { PluginIdentityError } = await import("../bun/plugin-identity");
+          throw new PluginIdentityError();
+        }
+        if (startup === "wrapped-connected") return { content: [{ type: "text", text: JSON.stringify({ status: "connected" }) }] };
         return { status: startup };
       };
       await expect(
@@ -73,12 +80,24 @@ test.each(["connected", "awaiting-session-reload", "failed"])(
         f.factory(""),
       );
       expect(result.connection.status).toBe(
-        startup === "failed" ? "paired_receiver_not_started" : startup,
+        startup === "failed" || startup === "identity-failed" ? "paired_receiver_not_started" : startup === "wrapped-connected" ? undefined : startup,
       );
       expect(result.notification.status).toBe("sent");
       const notice = f.calls.filter((c) => c.method === "sendRichMessage").at(-1).args;
       expect(notice.text).toContain("System\nPairing complete.");
       expect(notice.text).toContain("Messages from other users and group chats are ignored without a reply and are not forwarded to Codex.");
+      expect(notice.text).toContain(startup === "connected" || startup === "wrapped-connected" ? "The receiver is connected." : startup === "failed" || startup === "identity-failed" || ["awaiting-session-reload", "mcp-startup-failed", "mcp-unavailable"].includes(startup) ? "The receiver is not ready" : "Receiver readiness has not yet been confirmed.");
+      if (startup === "identity-failed") {
+        expect(result.connection.reason).toBe("plugin_identity_unavailable");
+        expect(result.connection.next_step).toContain("--plugin-root");
+        expect(f.store.read("sample").owner_id).toBe(42);
+      }
+      if (startup === "failed") {
+        expect(result.connection.reason).toBe("receiver_start_failed");
+        const j = new Journal(f.store.instance("sample"));
+        expect(j.get("pairing_activation_error").detail).toContain("fixture startup failure");
+        j.close();
+      }
       expect(notice.entities.some((e: any) => e.type === "blockquote")).toBe(true);
       expect(starts).toBe(1);
       expect(
@@ -536,4 +555,81 @@ test("an issued code cannot be redeemed after its window expires", async () => {
   } finally {
     f.clean();
   }
+});
+
+
+test("pairing watcher retries failed reads and reports code delivery without secrets", async () => {
+  const f = fixture();
+  const abort = new AbortController();
+  let reads = 0;
+  try {
+    await beginPairing(f.store, "sample", "123456:secret", "s", undefined, f.factory);
+    f.setUpdates([{ update_id: 1, message: { from: { id: 42 }, chat: { id: 42, type: "private" }, text: "/start" } }]);
+    const result = await watchPairing(f.store, "sample", "s", abort.signal, (token) => {
+      const api = f.factory(token);
+      return { call: async (method: string, ...args: any[]) => {
+        if (method === "getUpdates" && ++reads === 1) throw Error("123456:secret ABCDEF123456 timeout");
+        const result = await api.call(method, ...args);
+        if (method === "sendRichMessage") abort.abort();
+        return result;
+      } } as any;
+    });
+    expect(result.status).toBe("stopped");
+    expect(reads).toBe(2);
+    const state = pairingStatus(f.store, "sample", "s");
+    expect(state.candidate_count).toBe(1);
+    expect(state.code_delivery[0].status).toBe("sent");
+    expect(state.polling.reason).toBe("cancelled");
+    expect(state.polling.last_success).toBeNumber();
+    expect(state.polling.last_error).toContain("[redacted]");
+    expect(state.polling.last_error).toContain("[redacted code]");
+    expect(JSON.stringify(state)).not.toContain("123456:secret");
+    expect(JSON.stringify(state)).not.toContain("ABCDEF123456");
+    expect(f.calls.filter((c) => c.method === "sendRichMessage")).toHaveLength(1);
+  } finally { f.clean(); }
+});
+
+test.each(["unknown", "rejected"])("pairing code %s delivery is observable and never replayed", async (status) => {
+  const { TelegramError } = await import("../bun/telegram");
+  const f = fixture();
+  try {
+    await beginPairing(f.store, "sample", "123456:secret", "s", undefined, f.factory);
+    f.setUpdates([{ update_id: 1, message: { from: { id: 42 }, chat: { id: 42, type: "private" }, text: "/start" } }]);
+    let sends = 0;
+    const factory = (token: string): any => {
+      const api = f.factory(token);
+      return { call: async (method: string, ...args: any[]) => {
+        if (method === "sendRichMessage") {
+          sends++;
+          throw status === "rejected" ? new TelegramError(403, "blocked") : Error("unknown result");
+        }
+        return api.call(method, ...args);
+      } };
+    };
+    await pollPairing(f.store, "sample", "s", factory);
+    await pollPairing(f.store, "sample", "s", factory);
+    const state = pairingStatus(f.store, "sample", "s");
+    expect(sends).toBe(1);
+    expect(state.code_delivery[0].status).toBe(status);
+    expect(state.candidate_count).toBe(1);
+  } finally { f.clean(); }
+});
+
+test("pairing watcher stops on polling conflicts and expires without reading again", async () => {
+  const { TelegramError } = await import("../bun/telegram");
+  const f = fixture();
+  try {
+    await beginPairing(f.store, "sample", "123456:secret", "s", undefined, f.factory);
+    let reads = 0;
+    const result = await watchPairing(f.store, "sample", "s", undefined, () => ({call: async () => { reads++; throw new TelegramError(409, "conflict"); }}) as any);
+    expect(result).toEqual({ status: "stopped", reason: "telegram_409" });
+    expect(reads).toBe(1);
+    expect(pairingStatus(f.store, "sample", "s").polling.reason).toBe("telegram_409");
+    const path = join(f.root, "pairings/sample.json");
+    atomic(path, { ...readJSON(path), expires_at: Date.now() + 60000 });
+    const expired = await watchPairing(f.store, "sample", "s", undefined, () => ({call: async () => { reads++; atomic(path, { ...readJSON(path), expires_at: Date.now() - 1 }); throw Error("temporary timeout"); }}) as any);
+    expect(expired.status).toBe("expired");
+    expect(reads).toBe(2);
+    expect(readJSON(path).polling.status).toBe("expired");
+  } finally { f.clean(); }
 });

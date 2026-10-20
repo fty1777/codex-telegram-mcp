@@ -1,23 +1,24 @@
 import { parseArgs } from "node:util";
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { Store, atomic } from "./state";
+import { join, dirname } from "node:path";
+import { marketplacePlugin, rescuePlugin } from "./plugin-identity";
+import { Store } from "./state";
 import { AppServer } from "./appserver";
 import { Sender } from "./telegram";
-import { start, stop, pause, status, parentDeath } from "./process";
+import { start, stop, pause, status } from "./process";
 import { uninstall, rollback } from "./install";
 import { configure } from "./setup";
 import { mcp } from "./mcp";
-import { runWorker } from "./worker";
-import { supervise } from "./supervisor";
 import { diagnostic } from "./engine";
 import { listBots, changeBinding } from "./management";
-import { channel, attachSharedPlugin } from "./channel";
+import { channel, prepareSharedPlugin } from "./channel";
 import { manager } from "./manager";
 import { installManager, uninstallManager } from "./manager-install";
 import {
   beginPairing,
   pollPairing,
+  watchPairing,
+  pairingStatus,
   completePairing,
   cancelPairing,
 } from "./pairing";
@@ -32,7 +33,6 @@ export async function main(argv = process.argv.slice(2)) {
       "plugin-root": { type: "string" },
       endpoint: { type: "string" },
       instance: { type: "string" },
-      "parent-pid": { type: "string" },
       "keep-config": { type: "boolean" },
       "no-start": { type: "boolean" },
       "request-id": { type: "string" },
@@ -55,13 +55,7 @@ export async function main(argv = process.argv.slice(2)) {
   switch (command) {
     case "plugin": {
       if (!v["plugin-root"]) throw Error("--plugin-root is required");
-      const root = resolve(v["plugin-root"]);
-      const manifest = JSON.parse(
-        readFileSync(join(root, ".codex-plugin/plugin.json"), "utf8"),
-      );
-      if (manifest.name !== "telegram")
-        throw Error("Unexpected Telegram plugin identity");
-      await channel(s, { id: "telegram@codex-telegram", root });
+      await channel(s, marketplacePlugin(v["plugin-root"]));
       return;
     }
     case "channel":
@@ -80,6 +74,8 @@ export async function main(argv = process.argv.slice(2)) {
       break;
     case "pair-begin":
     case "pair-check":
+    case "pair-status":
+    case "pair-watch":
     case "pair-confirm":
     case "pair-cancel": {
       const session = v.session ?? process.env.CODEX_THREAD_ID;
@@ -96,6 +92,14 @@ export async function main(argv = process.argv.slice(2)) {
           session,
           v.endpoint,
         );
+      } else if (command === "pair-status") result = pairingStatus(s, name, session);
+      else if (command === "pair-watch") {
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        process.on("SIGINT", abort);
+        process.on("SIGTERM", abort);
+        try { result = await watchPairing(s, name, session, controller.signal); }
+        finally { process.off("SIGINT", abort); process.off("SIGTERM", abort); }
       } else if (command === "pair-check")
         result = await pollPairing(s, name, session);
       else if (command === "pair-cancel")
@@ -107,7 +111,7 @@ export async function main(argv = process.argv.slice(2)) {
           session,
           String(v["code"] ?? ""),
           async () => {
-            attachSharedPlugin(s, name);
+            await prepareSharedPlugin(s, name, rescuePlugin(s, name, v["plugin-root"], dirname(import.meta.path)));
             return start(s, name, true);
           },
         );
@@ -119,7 +123,7 @@ export async function main(argv = process.argv.slice(2)) {
       if (v.instance || p[1]) {
         if (!existsSync(join(s.instance(name), "config.json")))
           await configure(s, name, v.endpoint);
-        attachSharedPlugin(s, name);
+        await prepareSharedPlugin(s, name);
         result.connection = await start(s, name, true);
       }
       break;
@@ -133,9 +137,11 @@ export async function main(argv = process.argv.slice(2)) {
       result = await rollback(s, name);
       break;
     case "start":
+      if (v["plugin-root"]) await prepareSharedPlugin(s, name, marketplacePlugin(v["plugin-root"]), false);
       result = await start(s, name);
       break;
     case "resume":
+      if (v["plugin-root"]) await prepareSharedPlugin(s, name, marketplacePlugin(v["plugin-root"]), false);
       result = await start(s, name, true);
       break;
     case "stop":
@@ -163,6 +169,7 @@ export async function main(argv = process.argv.slice(2)) {
         s.read(name).thread_id ?? null,
         v.activate,
       );
+      if (v["plugin-root"]) await prepareSharedPlugin(s, name, marketplacePlugin(v["plugin-root"]), false);
       if (s.read(name).enabled) result.connection = await start(s, name);
       break;
     }
@@ -174,35 +181,9 @@ export async function main(argv = process.argv.slice(2)) {
         s.read(name).thread_id ?? null,
       );
       break;
-    case "run":
-      if (v["parent-pid"]) parentDeath(Number(v["parent-pid"]));
-      await runWorker(s, name);
-      return;
-    case "supervise":
-      await supervise(s, name);
-      return;
     case "mcp":
       await mcp(s, name);
       return;
-    case "session-hook": {
-      const event = JSON.parse(await Bun.stdin.text()),
-        c = s.read(name);
-      if (event.session_id !== c.thread_id) return;
-      if (event.hook_event_name === "SessionStart" && c.enabled) {
-        atomic(join(s.instance(name), "session-active.json"), {
-          thread_id: c.thread_id,
-          active: true,
-        });
-        await start(s, name);
-      } else if (event.hook_event_name === "SessionEnd") {
-        atomic(join(s.instance(name), "session-active.json"), {
-          thread_id: c.thread_id,
-          active: false,
-        });
-        await stop(s, name, false);
-      }
-      return;
-    }
     case "doctor": {
       const c = await AppServer.connect(v.endpoint);
       try {
@@ -250,7 +231,7 @@ export async function main(argv = process.argv.slice(2)) {
     }
     default:
       throw Error(
-        "Commands: install-manager, uninstall-manager, pair-begin, pair-check, pair-confirm, pair-cancel, bind, unbind, install, configure, start, stop, pause, resume, status, doctor, list, send, delivery-status, uninstall, rollback",
+        "Commands: install-manager, uninstall-manager, pair-begin, pair-check, pair-status, pair-watch, pair-confirm, pair-cancel, bind, unbind, install, configure, start, stop, pause, resume, status, doctor, list, send, delivery-status, uninstall, rollback",
       );
   }
   console.log(JSON.stringify(result));

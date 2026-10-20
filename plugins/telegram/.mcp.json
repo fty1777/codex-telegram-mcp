@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "telegram": {
-      "command": "bun",
-      "args": ["${PLUGIN_ROOT}/bridge.js", "plugin", "--plugin-root", "${PLUGIN_ROOT}"],
-      "startup_timeout_sec": 30
-    }
-  }
-}

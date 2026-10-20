@@ -6,7 +6,10 @@
 
 Report plugin installation, tool loading, pairing, receiver connection, and a
 successful message exchange separately. `awaiting-session` means the bound session
-must be resumed; `awaiting-session-reload` means its new tools have not loaded.
+must be resumed. `mcp-startup-failed` identifies initialization failure, while
+`mcp-unavailable` means its tools are unavailable without a confirmed startup
+failure. Inspect MCP startup status before choosing a recovery action; a
+successful refresh request alone does not prove recovery.
 
 `list_bots` exposes current `receiver_status` and a historical pairing check:
 
@@ -33,6 +36,14 @@ issuing one grants no access. Only private `/start` from a human receives a code
 at most once per user and for at most 20 users per window. Ten incorrect redemption
 attempts exhaust the window. Successful redemption invalidates every code. Other
 users and groups cannot submit messages or attachments.
+
+The MCP host and rescue `pair-watch` share a cancellable, time-bounded watcher.
+Transient reads retry with backoff; authentication and poll conflicts stop with
+a queryable reason. Pairing summaries expose read health and per-candidate code
+delivery status without user IDs, codes or credentials. Code sends reserve their
+candidate and cursor before network I/O; ambiguous sends remain unknown and are
+never replayed. Pairing activation failures preserve the binding, record a
+redacted local diagnostic, and produce a readiness-aware system notice.
 
 Duplicate bots, concurrent pairing for the same bot, and existing webhooks are
 refused. A session handoff pauses the old binding and holds its pending inbox;
@@ -297,3 +308,12 @@ means the precise cause is unknown, not a diagnosis of the old incident.
 two-bot isolation, cancellation/replacement, stable receipts, flood backoff, binding
 changes and diagnostic privacy. These are controlled local tests, not evidence of
 Telegram delivery in an unrelated installation.
+
+
+Receiver discovery verifies `worker-process.json` against the live process
+identity before using its health. Retired independent process records cannot
+report a running receiver. Only Codex-owned MCP workers can be started; old
+independent receivers can be stopped for migration, never relaunched. Plugin
+connection drains a retired receiver before attaching MCP, preserving pairing,
+message cursors and delivery receipts. A worker-only ownership record is never
+signalled as an independent process because it may belong to the Codex host.

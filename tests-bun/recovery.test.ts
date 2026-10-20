@@ -350,6 +350,8 @@ test("blocked historical HTTP does not block polling, owner delivery, or another
     34,
     "second-thread",
   );
+  for (const name of ["test", "second"])
+    atomic(join(f.store.instance(name), "config.json"), { ...f.store.read(name), lifecycle: "mcp" });
   const secondJournal = new Journal(f.store.instance("second"));
   secondJournal.put("history_initialized", true);
   const oldConnect = AppServer.connect,

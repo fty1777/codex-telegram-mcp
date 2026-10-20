@@ -81,3 +81,38 @@ test("receiver lock waits through a handoff but respects cancellation and timeou
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test.each(["missing", "startup-failed", "failed-status"])("MCP %s diagnosis does not assume session reload is the fix", async (kind) => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { createServer } = await import("node:http");
+  const { WebSocketServer } = await import("ws");
+  const { controlMcp } = await import("../bun/lifecycle");
+  const root = mkdtempSync(join(tmpdir(), "telegram-mcp-startup-status-"));
+  const socket = join(root, "rpc.sock");
+  const server = createServer();
+  const ws = new WebSocketServer({ server });
+  const calls: string[] = [];
+  ws.on("connection", (peer) => peer.on("message", (data) => {
+    const m = JSON.parse(data.toString());
+    if (m.id === undefined) return;
+    calls.push(m.method);
+    const response = m.method === "mcpServer/tool/call"
+      ? { error: { code: -32603, message: kind === "startup-failed" ? "failed to get client: MCP startup failed: handshaking failed" : "unknown MCP server telegram" } }
+      : { result: m.method === "thread/read" ? { thread: { status: { type: "idle" } } }
+        : m.method === "mcpServerStatus/list" ? { data: kind === "failed-status" ? [{ name: "telegram", runtimeStatus: "failed", toolsError: "Module not found" }] : [] } : {} };
+    peer.send(JSON.stringify({ id: m.id, ...response }));
+  }));
+  await new Promise<void>((resolve) => server.listen(socket, resolve));
+  try {
+    const result = await controlMcp({ thread_id: "session", endpoint: "unix://" + socket, mcp_server: "telegram", shared_mcp: true, name: "sample" }, "connect", true);
+    expect(result.status).toBe(kind === "missing" ? "mcp-unavailable" : "mcp-startup-failed");
+    expect(result.status).not.toBe("awaiting-session-reload");
+    expect(calls).toEqual(["initialize", "thread/read", "mcpServer/tool/call", "mcpServerStatus/list"]);
+    expect(result.detail).toContain(kind === "missing" ? "Inspect MCP startup status" : "reloading the session is not a confirmed fix");
+  } finally {
+    for (const peer of ws.clients) peer.terminate();
+    ws.close(); server.close(); rmSync(root, { recursive: true, force: true });
+  }
+});

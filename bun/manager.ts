@@ -5,7 +5,7 @@ import { Store, atomic } from "./state";
 import { callingSession, listBots, changeBinding } from "./management";
 import {
   beginPairing,
-  pollPairing,
+  watchPairing,
   pairingStatus,
   completePairing,
   cancelPairing,
@@ -28,7 +28,7 @@ export function managementServer(
     { name: "codex-telegram-manager", version: "0.3.0" },
     {
       instructions:
-        "Manage Telegram bots and send messages from this Codex session. Use send_text for progress, and send_photo/send_document for attachments. Find the allowed outgoing_directory using list_bots. Reuse request_id for retries and inspect unknown receipts; never include an already sent path in the final reply. Public commentary and final replies are automatically forwarded. BotFather creates bots; add_bot connects an existing token. Ask the user to privately send /start to the bot, then paste its pairing code here. Redeem that code with confirm_pairing; no extra identity confirmation is needed. Never echo a token. Binding always targets the calling session. Inspect list_bots before changing bindings. Pending messages from the previous session are held, not replayed. Do not claim connection when installation returns awaiting-session-reload. No Telegram /bind is provided.",
+        "Manage Telegram bots and send messages from this Codex session. Use send_text for progress, and send_photo/send_document for attachments. Find the allowed outgoing_directory using list_bots. Reuse request_id for retries and inspect unknown receipts; never include an already sent path in the final reply. Public commentary and final replies are automatically forwarded. BotFather creates bots; add_bot connects an existing token. Ask the user to privately send /start to the bot, then paste its pairing code here. Redeem that code with confirm_pairing; no extra identity confirmation is needed. Never echo a token. Binding always targets the calling session. Inspect list_bots before changing bindings. Pending messages from the previous session are held, not replayed. Do not claim connection until receiver readiness is verified. No Telegram /bind is provided.",
     },
   );
   const watching = new Map<
@@ -57,21 +57,10 @@ export function managementServer(
     const controller = new AbortController();
     const done = (async () => {
       try {
-        while (!controller.signal.aborted) {
-          try {
-            const result = await pollPairing(
-              store,
-              name,
-              session,
-              undefined,
-              controller.signal,
-            );
-            if (["closed", "stopped"].includes(result.status)) break;
-          } catch (error) {
-            if (/expired|ENOENT|another session/.test(String(error))) break;
-          }
-          if (!controller.signal.aborted) await Bun.sleep(1000);
-        }
+        await watchPairing(store, name, session, controller.signal);
+      } catch {
+        // The window can close between scheduling the task and its first read.
+        // check_pairing can restart a stopped watcher without exposing secrets.
       } finally {
         watching.delete(name);
       }

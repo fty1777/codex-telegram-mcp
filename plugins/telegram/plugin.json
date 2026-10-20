@@ -1,0 +1,11 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "telegram",
+  "version": "0.7.4",
+  "description": "Continue your Codex conversation from Telegram.",
+  "author": {
+    "name": "fty1777"
+  },
+  "homepage": "https://github.com/fty1777/codex-telegram-mcp",
+  "license": "Apache-2.0"
+}

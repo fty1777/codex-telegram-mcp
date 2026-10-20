@@ -11,6 +11,9 @@ import { randomUUID } from "node:crypto";
 export function listBots(store: Store) {
   return store.list().map((config) => {
     const runtime = status(store, config.name);
+    const receiver = runtime.worker ?? runtime.process;
+    const receiverHealth = receiver && runtime.health?.pid === receiver.pid
+      ? runtime.health : null;
     let pairingConnectivity = "not_tested";
     let pending = 0,
       held = 0;
@@ -83,21 +86,19 @@ export function listBots(store: Store) {
       running: Boolean(runtime.process),
       pairing_connectivity: pairingConnectivity,
       receiver_status:
-        runtime.process && runtime.health?.pid === runtime.process.pid
-          ? (runtime.health?.telegram?.status ?? "starting")
+        receiverHealth
+          ? (receiverHealth.telegram?.status ?? "starting")
           : "stopped",
       setup_stage: !config.thread_id
         ? "paired_unbound"
-        : runtime.process &&
-            runtime.health?.pid === runtime.process.pid &&
-            runtime.health?.telegram?.status === "connected"
+        : receiverHealth?.telegram?.status === "connected"
           ? "receiver_connected"
           : "paired_receiver_not_ready",
-      recovery: runtime.health?.recovery
+      recovery: receiverHealth?.recovery
         ? {
-            status: runtime.health.recovery.status,
-            pending: runtime.health.recovery.pending,
-            blocked: runtime.health.recovery.blocked,
+            status: receiverHealth.recovery.status,
+            pending: receiverHealth.recovery.pending,
+            blocked: receiverHealth.recovery.blocked,
           }
         : null,
       last_inbound: lastInbound

@@ -273,3 +273,66 @@ test("output draining bounds each snapshot without losing newly arriving events"
   });
   expect(seen).toEqual([1, 2]);
 });
+
+test("plugin attachment retires an owned independent process without losing pairing or receipts", async () => {
+  const { prepareSharedPlugin } = await import("../bun/channel");
+  const { identity, start } = await import("../bun/process");
+  const { Journal } = await import("../bun/state");
+  const root = mkdtempSync(join(tmpdir(), "telegram-retire-receiver-"));
+  const store = new Store(root);
+  store.configure("sample", "123456:fixture", { id: 123456, username: "sample" }, 42, "session");
+  const journal = new Journal(store.instance("sample"));
+  const child = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { stdout: "ignore", stderr: "ignore" });
+  try {
+    journal.put("telegram_offset", 27);
+    journal.begin("out", "unknown-send", { text: "fixture" });
+    const path = store.instance("sample");
+    atomic(join(path, "process.json"), identity(child.pid));
+    atomic(join(path, "worker-process.json"), identity(child.pid));
+    await expect(start(store, "sample", true)).rejects.toThrow("Independent receivers are no longer supported");
+    expect(child.exitCode).toBeNull();
+    const plugin = { id: "telegram@codex-telegram", root: "/fixture/plugin" };
+    expect(() => attachSharedPlugin(store, "sample", plugin)).toThrow("Retired receiver is still active");
+    const config = await prepareSharedPlugin(store, "sample", plugin);
+    await child.exited;
+    expect(identity(child.pid)).toBeNull();
+    expect(config.lifecycle).toBe("mcp");
+    expect(config.shared_mcp).toBe(true);
+    expect(config.owner_id).toBe(42);
+    expect(config.thread_id).toBe("session");
+    expect(store.token("sample")).toBe("123456:fixture");
+    expect(journal.get("telegram_offset")).toBe(27);
+    expect(journal.status("out", "unknown-send")?.status).toBe("unknown");
+  } finally {
+    child.kill(); await child.exited;
+    journal.close(); rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("retired CLI launch commands cannot start receivers", async () => {
+  const root = mkdtempSync(join(tmpdir(), "telegram-removed-launcher-"));
+  try {
+    for (const command of ["run", "supervise", "session-hook"]) {
+      const child = Bun.spawn([process.execPath, join(import.meta.dir, "../bun/cli.ts"), command, "sample", "--data-dir", root], { stdout: "pipe", stderr: "pipe" });
+      const timer = setTimeout(() => child.kill(), 5000);
+      try {
+        const [err, exit] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+        expect(exit).toBe(1);
+        expect(err).toContain("Commands:");
+        expect(existsSync(join(root, "instances/sample/worker-process.json"))).toBe(false);
+      } finally { clearTimeout(timer); }
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("workers require MCP configuration and an owning lifecycle signal", async () => {
+  const { runWorker } = await import("../bun/worker");
+  const root = mkdtempSync(join(tmpdir(), "telegram-worker-ownership-"));
+  const store = new Store(root);
+  store.configure("sample", "123456:fixture", { id: 123456, username: "sample" }, 42, "session");
+  try {
+    await expect((runWorker as any)(store, "sample")).rejects.toThrow("Codex-owned lifecycle signal");
+    await expect(runWorker(store, "sample", new AbortController().signal)).rejects.toThrow("Only Codex-managed MCP receivers are supported");
+    expect(existsSync(join(store.instance("sample"), "worker-process.json"))).toBe(false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

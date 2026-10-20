@@ -87,15 +87,23 @@ export async function controlMcp(
         !refreshLoaded ||
         tool !== "connect" ||
         !(e instanceof RpcError) ||
-        !e.message.includes("unknown MCP server")
+        !(e.message.includes("unknown MCP server") || e.message.includes("MCP startup failed"))
       )
         throw e;
-      // A running session can retain its old MCP catalog. Do not report a
-      // successful connection while the newly installed server is absent.
+      // A missing tool can mean a failed launcher, not just an old tool catalog.
+      // Refresh/reload requests are not evidence that initialization succeeded.
+      let failed = e.message.includes("MCP startup failed");
+      try {
+        const result = await client.call("mcpServerStatus/list", { threadId: config.thread_id });
+        const server = result.data?.find((s: any) => s.name === config.mcp_server);
+        failed ||= Boolean(server?.toolsError || server?.runtimeStatus === "failed");
+      } catch { /* Older servers may not expose startup status. */ }
       return {
-        status: "awaiting-session-reload",
+        status: failed ? "mcp-startup-failed" : "mcp-unavailable",
         detail:
-          "Plugin installed, but this running session has not loaded it. Reload the bound Codex session; its MCP receiver will connect automatically.",
+          failed
+            ? "Telegram MCP initialization failed. Inspect its startup status and launcher before requesting a configuration refresh. Pairing is retained; reloading the session is not a confirmed fix."
+            : "Telegram tools are unavailable in this session. Inspect MCP startup status and request a configuration refresh. If a session reload is still needed, finish current work first and reopen the same conversation. Pairing is retained.",
       };
     }
   } finally {

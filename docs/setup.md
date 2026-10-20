@@ -25,8 +25,9 @@ chats are ignored. See [privacy and disclaimer](privacy.md).
 | --- | --- |
 | `bun` is not found | Restart your shell after installing Bun, or use `~/.bun/bin/bun`. |
 | `doctor` cannot connect | Open Codex and ask it to check the local connection before continuing setup. |
-| Codex cannot find the Telegram tools | Finish the current task, then reload the same conversation. |
+| Codex cannot find the Telegram tools | Ask Codex to inspect MCP startup status and refresh configuration. If a reload is still needed, finish the task first and reopen the same conversation. |
 | The bot does not send a pairing code | Check that setup is open and that you sent `/start` in a private chat. Ask Codex to check pairing. |
+| Pairing has a candidate, but no code arrived | Ask Codex to check code delivery status; a candidate alone does not confirm delivery. Do not blindly resend an unknown delivery. |
 | The code expired | Ask Codex to cancel the expired setup and open a new pairing window. |
 | Pairing succeeded, but messages do not arrive | Ask Codex to check the connection. Pairing usually does not need to be repeated. |
 | The bot is already connected elsewhere | Ask Codex to move the existing bot to this conversation. |

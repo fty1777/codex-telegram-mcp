@@ -18,7 +18,9 @@ checkout or `node_modules` after installation.
 
 The catalog is `.agents/plugins/marketplace.json`; the stable selector is
 `telegram@codex-telegram`. Its package lives in `plugins/telegram/` and uses the
-Codex compatibility manifest and `${PLUGIN_ROOT}` paths. The `plugin` CLI entry
+portable `plugin.json` and `mcp.json` manifests. Codex resolves the plugin working
+directory; Bun then runs `./bridge.js` from there (verified on Codex 0.163.0). No launcher argument depends
+on compatibility-format variable substitution. The `plugin` CLI entry
 starts the shared channel with the installed package's identity. It does not
 require or overwrite the legacy installer's `manager-installation.json` receipt.
 Pairing and explicit binding attach a bot to this installation. Startup refreshes
@@ -41,10 +43,16 @@ release. Publish only the intended branch and release files, never local archive
 branches or private runtime state.
 
 The marketplace probe copies only the distributable package into a temporary
-catalog, installs it with an isolated `CODEX_HOME`, loads its MCP tools, and checks
-that removal closes the host. It creates no Codex sessions and makes no Telegram
-requests. Pairing, receiver readiness, and real round-trip delivery need separate
-checks; package installation alone does not establish them.
+catalog and installs it with isolated `HOME` and `CODEX_HOME`. It starts a real
+Codex App Server and one disposable thread, then calls the plugin through Codex.
+It does not rewrite launch arguments or emulate plugin-root substitution. It
+runs no model turns and makes no Telegram requests. `--hot-load` instead installs
+after creating the thread and checks dispatch after a refresh. On Codex 0.163.0,
+this can discover tools while dispatch in the existing thread remains unavailable;
+the probe reports failure rather than equating discovery with successful use.
+The default fresh-session probe must successfully call `list_bots`.
+Pairing, receiver readiness
+and real round-trip delivery still need separate checks.
 
 For source-checkout development, the existing `bun run bridge install` installer
 remains available. Remove that installation before migrating to the marketplace
@@ -83,6 +91,8 @@ Use native tools normally. The rescue CLI supports:
 ```sh
 bun run bridge pair-begin NAME --session SESSION_ID --token-file PRIVATE_TOKEN_FILE
 bun run bridge pair-check NAME --session SESSION_ID
+bun run bridge pair-watch NAME --session SESSION_ID
+bun run bridge pair-status NAME --session SESSION_ID
 bun run bridge pair-confirm NAME --session SESSION_ID --code PAIRING_CODE
 bun run bridge pair-cancel NAME --session SESSION_ID
 bun run bridge bind NAME --session SESSION_ID --activate
@@ -92,6 +102,48 @@ Keep the token file private. `pair-confirm` saves pairing, attempts receiver sta
 and journals the same acknowledgement as the native tool. A startup failure leaves
 pairing saved; inspect state before retrying activation. Expired or exhausted
 pairing windows must be cancelled before replacement.
+
+`pair-check` reads once. `pair-watch` runs in the foreground until expiry,
+cancellation, redemption or a terminal error; it retries transient reads with
+bounded backoff. Keep that process alive while the user sends `/start`, or use
+the native tools, whose MCP host owns the watcher. `pair-status` queries the
+window without another Telegram read. Inspect `polling.status`, `last_success`,
+`reason` and `code_delivery`; a candidate count alone does not prove code delivery.
+Unknown code sends are never replayed. Expired windows remain queryable.
+These are rescue tools, not additional user setup steps. Prefer the native
+pairing tools and their built-in watcher. If they are missing, resolve tool
+loading before claiming that pairing is listening; do not substitute an
+unmonitored, agent-written polling script.
+
+For marketplace rescue, run the installed package's `bridge.js` directly, or
+pass its installed root explicitly when using a source checkout:
+
+```sh
+bun run bridge pair-confirm NAME --session SESSION_ID --code PAIRING_CODE --plugin-root PLUGIN_ROOT
+bun run bridge resume NAME --plugin-root PLUGIN_ROOT
+```
+
+The root must contain the Telegram manifests, launcher and bundled runtime. This
+path does not require `manager-installation.json`. If the package cannot be
+resolved, pairing is retained and the result includes `plugin_identity_unavailable`
+with recovery instructions. Other activation errors are recorded privately as
+`pairing_activation_error`; the Telegram notice makes clear that the receiver
+is not yet ready. `mcp-startup-failed` identifies failed initialization; `mcp-unavailable` means
+its tools are unavailable without a confirmed startup failure. Inspect
+`mcpServerStatus/list` before requesting a configuration refresh. Reloading the
+conversation is not a confirmed fix for a broken launcher. Loading tools and
+actual round-trip delivery still require separate checks; never reload active
+work to force activation.
+
+## Receiver lifecycle
+
+Codex owns every supported receiver through MCP. There is no detached receiver,
+`run` command, supervisor command or session-hook launcher. Do not use a second
+poller to work around MCP startup failures; inspect the actual startup error.
+Connecting an existing independently configured bot through the plugin stops its
+old owned process before attaching MCP. Pairing, session ownership, cursors and
+receipts remain intact. Direct starts of unmigrated configurations fail without
+launching a process. Retired process cleanup remains available for migration.
 
 ## Runtime reference
 

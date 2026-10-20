@@ -263,3 +263,36 @@ test("pairing connectivity requires confirmed outbound and a later accepted inbo
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("receiver discovery ignores retired process records and verifies the MCP worker", async () => {
+  const { identity } = await import("../bun/process");
+  const root = mkdtempSync(join(tmpdir(), "telegram-mcp-health-"));
+  const store = new Store(root);
+  const child = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { stdout: "ignore", stderr: "ignore" });
+  store.configure("sample", "123456:fixture", { id: 123456, username: "fixture" }, 42, "session");
+  try {
+    const path = store.instance("sample");
+    const worker = identity(child.pid)!;
+    expect(worker).not.toBeNull();
+    atomic(join(path, "process.json"), identity(process.pid));
+    atomic(join(path, "worker-process.json"), worker);
+    atomic(join(path, "health.json"), {
+      pid: child.pid, updated: Date.now() / 1000, status: "active",
+      telegram: { status: "connected" }, recovery: { status: "complete", pending: 0, blocked: 0 },
+    });
+    const bot = listBots(store)[0];
+    expect(bot.running).toBe(true);
+    expect(bot.receiver_status).toBe("connected");
+    expect(bot.setup_stage).toBe("receiver_connected");
+    expect(bot.recovery?.status).toBe("complete");
+    atomic(join(path, "worker-process.json"), { ...worker, start_ticks: "invalid" });
+    const stale = listBots(store)[0];
+    expect(stale.running).toBe(false);
+    expect(stale.receiver_status).toBe("stopped");
+    expect(stale.setup_stage).toBe("paired_receiver_not_ready");
+    expect(stale.recovery).toBeNull();
+  } finally {
+    child.kill(); await child.exited;
+    rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -1,16 +1,11 @@
 import { dlopen, FFIType } from "bun:ffi";
-import { closeSync, existsSync, openSync, readFileSync } from "node:fs";
+import { closeSync, openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { spawn } from "node:child_process";
 import { atomic, readJSON, Store } from "./state";
 import { controlMcp } from "./lifecycle";
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // Linux ownership primitives; never signal an unverified numeric PID.
 const libc = dlopen("libc.so.6", {
-  prctl: {
-    args: [FFIType.i32, FFIType.u64, FFIType.u64, FFIType.u64, FFIType.u64],
-    returns: FFIType.i32,
-  },
   flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
   pidfd_open: { args: [FFIType.i32, FFIType.u32], returns: FFIType.i32 },
   pidfd_send_signal: {
@@ -98,9 +93,10 @@ export function ownedSignal(r: any) {
 }
 export function status(s: Store, n: string) {
   const p = s.instance(n);
+  const worker = live(join(p, "worker-process.json"));
   return {
-    process:
-      live(join(p, "process.json")) ?? live(join(p, "worker-process.json")),
+    process: worker,
+    worker,
     health: record(join(p, "health.json")),
     enabled: s.read(n).enabled,
     telegram_api: s.read(n).telegram_api?.mode ?? "cloud",
@@ -112,18 +108,21 @@ export async function stop(s: Store, n: string, wait = true, disable = false) {
   try {
     if (disable)
       atomic(join(p, "config.json"), { ...s.read(n), enabled: false });
-    if (s.read(n).lifecycle === "mcp") {
+    if (s.read(n).lifecycle === "mcp" && !live(join(p, "process.json"))) {
       atomic(join(p, "config.json"), { ...s.read(n), autostart: false });
       if (!live(join(p, "worker-process.json"))) return { status: "stopped" };
       // Pause is persistent; stop leaves the MCP host alive for a later start.
-      // Never signal the Codex-owned process as if it were our supervisor.
+      // Never signal the Codex-owned host process.
       const result = await controlMcp(s.read(n), "disconnect");
       if (result?.isError)
         throw Error("MCP disconnect failed: " + JSON.stringify(result));
       return { status: "stopped" };
     }
-    const r =
-      live(join(p, "process.json")) ?? live(join(p, "worker-process.json"));
+    // Cleanup only: no independent receiver can be launched by this runtime.
+    // A worker record alone may belong to Codex's MCP host; never signal it.
+    const r = live(join(p, "process.json"));
+    if (!r && live(join(p, "worker-process.json")))
+      throw Error("Receiver ownership is unclear; no process was signalled. Inspect its plugin binding.");
     if (r) {
       ownedSignal(r);
       if (wait) {
@@ -151,56 +150,22 @@ export async function start(s: Store, n: string, resume = false) {
     let c = s.read(n);
     if (c.removing || c.binding_change || !c.thread_id)
       throw Error("Instance is not ready to start; inspect its binding");
+    if (c.lifecycle !== "mcp")
+      throw Error("Independent receivers are no longer supported. Connect this bot through the Telegram plugin; pairing is retained.");
+    if (live(join(p, "process.json")))
+      throw Error("A retired receiver is still running. Connect this bot through the Telegram plugin to migrate it safely.");
     if (resume) {
       c = { ...c, enabled: true };
       atomic(join(p, "config.json"), c);
-      atomic(join(p, "session-active.json"), {
-        thread_id: c.thread_id,
-        active: true,
-      });
     }
     if (!c.enabled) throw Error("Instance paused; resume first");
-    if (c.lifecycle === "mcp") {
-      c = { ...c, autostart: true };
-      atomic(join(p, "config.json"), c);
-      const result = await controlMcp(c, "connect", true);
-      if (result?.isError)
-        throw Error("MCP connect failed: " + JSON.stringify(result));
-      return result;
-    }
-    const r =
-      live(join(p, "process.json")) ?? live(join(p, "worker-process.json"));
-    if (r) return { status: "already-running", pid: r.pid };
-    const receipt = record(join(p, "installation.json"));
-    const entry = receipt?.runtime
-      ? join(receipt.runtime, "bridge.js")
-      : join(import.meta.dir, "cli.ts");
-    if (receipt?.runtime && !existsSync(entry))
-      throw Error("Installed runtime is not Bun; run install to migrate it");
-    const fd = openSync(join(p, "bridge.log"), "a", 0o600);
-    const child = spawn(
-      process.execPath,
-      [entry, "--data-dir", s.root, "supervise", "--instance", n],
-      { detached: true, stdio: ["ignore", fd, fd] },
-    );
-    closeSync(fd);
-    child.unref();
-    for (let i = 0; i < 100; i++) {
-      const owned = live(join(p, "process.json"));
-      if (owned?.pid === child.pid)
-        return { status: "started", pid: child.pid };
-      if (child.exitCode !== null)
-        throw Error("Bridge startup failed; inspect bridge.log");
-      await sleep(50);
-    }
-    throw Error("Startup still pending; inspect status");
+    c = { ...c, autostart: true };
+    atomic(join(p, "config.json"), c);
+    const result = await controlMcp(c, "connect", true);
+    if (result?.isError)
+      throw Error("MCP connect failed: " + JSON.stringify(result));
+    return result;
   } finally {
     release();
   }
-}
-
-export function parentDeath(pid: number) {
-  if (libc.prctl(1, 15, 0, 0, 0) !== 0)
-    throw Error("Cannot set parent death signal");
-  if (process.ppid !== pid) process.exit(0);
 }

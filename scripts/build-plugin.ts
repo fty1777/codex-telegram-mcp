@@ -19,6 +19,10 @@ const manifestPath = join(output, ".codex-plugin/plugin.json");
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 manifest.version = JSON.parse(readFileSync(join(repo, "package.json"), "utf8")).version;
 writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+const portableManifestPath = join(output, "plugin.json");
+const portableManifest = JSON.parse(readFileSync(portableManifestPath, "utf8"));
+portableManifest.version = manifest.version;
+writeFileSync(portableManifestPath, JSON.stringify(portableManifest, null, 2) + "\n");
 for (const name of ["LICENSE", "NOTICE"]) copyFileSync(join(repo, name), join(output, name));
 mkdirSync(join(output, "licenses"), { recursive: true });
 for (const name of readdirSync(join(repo, "licenses")))
