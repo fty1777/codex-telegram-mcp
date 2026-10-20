@@ -76,6 +76,10 @@ test.each(["connected", "awaiting-session-reload", "failed"])(
         startup === "failed" ? "paired_receiver_not_started" : startup,
       );
       expect(result.notification.status).toBe("sent");
+      const notice = f.calls.filter((c) => c.method === "sendRichMessage").at(-1).args;
+      expect(notice.text).toContain("System\nPairing complete.");
+      expect(notice.text).toContain("Messages from other users and group chats are ignored without a reply and are not forwarded to Codex.");
+      expect(notice.entities.some((e: any) => e.type === "blockquote")).toBe(true);
       expect(starts).toBe(1);
       expect(
         f.calls.filter((c) =>
@@ -195,6 +199,8 @@ test("pairing is durable, session-scoped, explicit, and does not expose credenti
       f.factory,
     );
     expect(polled.candidate_count).toBe(1);
+    const html = f.calls.find((c) => c.method === "sendRichMessage").args.rich_message.html;
+    expect(html).toMatch(/<tg-button type="copy_text" text="([A-F0-9]{12})">\1<\/tg-button>/);
     const code = f.calls
       .find((c) => c.method === "sendRichMessage")
       .args.text.match(/Pairing code: ([A-F0-9]+)/)[1];

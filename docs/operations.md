@@ -14,9 +14,7 @@ When reconnecting, history is restored in the background while new messages can
 still be received. Ask Codex to check the last received message and recovery state
 if messages appear delayed.
 
-Replies support text formatting. System notices appear as quotes with a **System** heading inside; Codex messages
-show elapsed time, usage, and available goal/question state in a native footer.
-Use `/questions` to list unanswered questions and copy reply commands. See [Use it](../README.md#use-it).
+For message formatting, status footers and questions, see [Using Telegram](usage.md).
 
 ## Pause or stop
 
@@ -74,13 +72,4 @@ For full removal, uninstall each bot before uninstalling the plugin.
 The checkout command `bun run bridge uninstall-plugin` removes only the older
 checkout-based installation; use `codex plugin remove` for the marketplace plugin.
 
-## Notifications
-
-System notices explain connection problems and any action needed. Codex reports
-progress, blockers, and results in its own messages. Routine development checks
-and intermediate tool failures stay out of Telegram.
-
-If delivery cannot be confirmed, check the chat before sending the same request
-again. This avoids accidentally repeating an action.
-
-Secret answers to Codex questions must be entered in the terminal.
+For system notices and uncertain delivery, see [Using Telegram](usage.md#system-notices).

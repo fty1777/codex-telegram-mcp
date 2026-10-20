@@ -13,8 +13,11 @@ separate dependency installation. Bun must be available to Codex as `bun`.
 
 In the Codex conversation you want to use, ask Codex to connect the bot. Send
 `/start` privately to the bot, then paste its pairing code back into Codex.
-The code expires after 15 minutes. Finish by sending a short Telegram message
+Click the code to copy it. It expires after 15 minutes. Finish by sending a short Telegram message
 and checking that Codex replies.
+
+After pairing, only your private messages are accepted; other users and group
+chats are ignored. See [privacy and disclaimer](privacy.md).
 
 ## If setup gets stuck
 

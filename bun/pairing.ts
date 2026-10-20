@@ -37,7 +37,7 @@ export async function completePairing(
     sender = new Sender(store, name, api);
     notification = await sender.send("pairing-success", {
       source: "system",
-      text: "Pairing complete. This bot now accepts only your private messages. Send a short message to test the connection.",
+      text: "Pairing complete. This bot accepts only your private messages. Messages from other users and group chats are ignored without a reply and are not forwarded to Codex. Send a short message to test the connection.",
     });
   } catch {
     notification = {
@@ -202,7 +202,7 @@ export async function pollPairing(
           value.candidates.push({ user_id: id, code_hash: codeHash(code) });
           outbound = {
             chat_id: id,
-            text: `Pairing code: ${code}\nPaste this code into the Codex session that started setup. This code does not grant access until redeemed there.`,
+            text: `Pairing code: \`${code}\`\nPaste this code into the Codex session that started setup. This code does not grant access until redeemed there.`,
           };
         }
         // Reserve the response and cursor before sending; unknown delivery is not retried.
@@ -212,7 +212,7 @@ export async function pollPairing(
       }
       if (outbound && !signal?.aborted) {
         try {
-          const rendered = messages(outbound.text, "system")[0]!;
+          const rendered = messages(outbound.text, "system", "markdown")[0]!;
           await api.call("sendRichMessage", { chat_id: outbound.chat_id, ...richFields(rendered) });
         } catch {
           /* A reserved code remains valid; never replay an ambiguous send. */
