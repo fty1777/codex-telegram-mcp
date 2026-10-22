@@ -420,10 +420,12 @@ export class Engine {
         } catch (e) {
           if (
             e instanceof RpcError &&
-            e.message === "cannot steer a compact turn"
+            e.code === -32600 &&
+            (e.message === "cannot steer a compact turn" ||
+              /^expected active turn id [^\s`]+ but found `[^`\s]+`$/.test(e.message))
           ) {
             // The steer was explicitly rejected, so it is safe to enqueue the
-            // same input once. Codex drains its queue after compaction finishes.
+            // same input once. Codex drains its queue when the active turn allows it.
             result = await this.client.call("thread/queue/add", params);
           } else {
             if (
@@ -475,7 +477,9 @@ export class Engine {
             : submitting
               ? "Codex could not apply this command. Check /status or /goal before trying again."
               : "Could not retrieve this information from Codex. Try the command again later."
-          : "⚠️ Message was not submitted to Codex:\n" + reason,
+          : submitting
+            ? "Codex could not accept this message. Please try sending it again."
+            : "This message could not be prepared for Codex. Check the attachment and try again.",
       );
       return "rejected";
     }

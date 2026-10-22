@@ -162,6 +162,10 @@ export async function start(s: Store, n: string, resume = false) {
     c = { ...c, autostart: true };
     atomic(join(p, "config.json"), c);
     const result = await controlMcp(c, "connect", true);
+    if (result?.isError || ["mcp-unavailable", "mcp-startup-failed", "awaiting-session"].includes(result?.status)) {
+      const { completeHandoff } = await import("./handoff");
+      await completeHandoff(s, n, 0);
+    }
     if (result?.isError)
       throw Error("MCP connect failed: " + JSON.stringify(result));
     return result;

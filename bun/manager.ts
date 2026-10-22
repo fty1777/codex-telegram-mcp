@@ -13,6 +13,7 @@ import {
 import { install, uninstall } from "./install";
 import { start, lock } from "./process";
 import { join } from "node:path";
+import metadata from "../package.json";
 
 /** Codex owns this stdio process and its short-lived pairing pollers.
  * Credentials never appear in the MCP manifest. */
@@ -22,10 +23,12 @@ export function managementServer(
     install: (s: Store, n: string) => Promise<any>;
     uninstall: (s: Store, n: string) => Promise<any>;
     start?: (s: Store, n: string) => Promise<any>;
+    preflightBind?: (s: Store, n: string, session: string) => Promise<void>;
+    attach?: (s: Store, n: string) => Promise<void>;
   } = { install, uninstall },
 ) {
   const server = new McpServer(
-    { name: "codex-telegram-manager", version: "0.3.0" },
+    { name: "codex-telegram-manager", version: metadata.version },
     {
       instructions:
         "Manage Telegram bots and send messages from this Codex session. Use send_text for progress, and send_photo/send_document for attachments. Find the allowed outgoing_directory using list_bots. Reuse request_id for retries and inspect unknown receipts; never include an already sent path in the final reply. Public commentary and final replies are automatically forwarded. BotFather creates bots; add_bot connects an existing token. Ask the user to privately send /start to the bot, then paste its pairing code here. Redeem that code with confirm_pairing; no extra identity confirmation is needed. Never echo a token. Binding always targets the calling session. Inspect list_bots before changing bindings. Pending messages from the previous session are held, not replayed. Do not claim connection until receiver readiness is verified. No Telegram /bind is provided.",
@@ -71,6 +74,15 @@ export function managementServer(
     content: [{ type: "text" as const, text: JSON.stringify(value) }],
   });
   const instance = { instance: z.string().min(1).max(64) };
+  server.tool(
+    "plugin_status",
+    "Read the running Telegram plugin version. Installation alone does not confirm an update is running.",
+    {},
+    async (_args, extra) => {
+      callingSession(extra._meta);
+      return result({ version: metadata.version, pid: process.pid });
+    },
+  );
   server.tool(
     "list_bots",
     "List bots, bindings and receiver status without credentials.",
@@ -155,6 +167,8 @@ export function managementServer(
       activate: z.boolean().optional(),
     },
     async (args, extra) => {
+      const session = callingSession(extra._meta);
+      await services.preflightBind?.(store, args.instance, session);
       const changed = await changeBinding(
         store,
         args.instance,
@@ -162,6 +176,7 @@ export function managementServer(
         args.expected_session,
         args.activate,
       );
+      await services.attach?.(store, args.instance);
       return result({
         ...changed,
         connection: changed.enabled

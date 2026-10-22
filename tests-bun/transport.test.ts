@@ -225,6 +225,7 @@ test("standalone management MCP works before any bot exists and requires session
       "check_pairing",
       "confirm_pairing",
       "list_bots",
+      "plugin_status",
       "remove_bot",
       "unbind_bot",
     ]);
@@ -239,6 +240,11 @@ test("standalone management MCP works before any bot exists and requires session
       _meta: { threadId: "session" },
     });
     expect(JSON.parse(listed.content[0].text)).toEqual({ bots: [] });
+    const runtime: any = await client.callTool({ name: "plugin_status", arguments: {}, _meta: { threadId: "session" } });
+    const identity = JSON.parse(runtime.content[0].text);
+    expect(identity.version).toBe((await import("../package.json")).default.version);
+    expect(identity.pid).toBeNumber();
+
     const store = new Store(dir);
     store.configure(
       "sample",

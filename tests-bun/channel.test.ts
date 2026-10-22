@@ -293,7 +293,7 @@ test("plugin attachment retires an owned independent process without losing pair
     expect(child.exitCode).toBeNull();
     const plugin = { id: "codex-telegram-mcp@fty1777", root: "/fixture/plugin" };
     expect(() => attachSharedPlugin(store, "sample", plugin)).toThrow("Retired receiver is still active");
-    const config = await prepareSharedPlugin(store, "sample", plugin);
+    const config = await prepareSharedPlugin(store, "sample", plugin, true, { probe: async () => ({ status: "ready" }), notify: async () => {} });
     await child.exited;
     expect(identity(child.pid)).toBeNull();
     expect(config.lifecycle).toBe("mcp");

@@ -15,3 +15,7 @@ Keep credentials, private runtime state, and machine-specific paths out of commi
 Keep user documentation concise and focused on actions. Put implementation details
 in the developer reference. System notices should be calm and actionable; routine
 tool failures belong in local diagnostics.
+
+When Telegram is the active user channel and normal forwarding is unavailable,
+use the documented foreground send CLI for recovery progress and verify its
+receipt. Direct sending does not prove that receiving has recovered.

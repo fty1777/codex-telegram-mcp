@@ -841,6 +841,54 @@ test("compact steer rejection queues each input once without a warning", async (
   }
 });
 
+test("stale turn rejection queues the same input once without exposing turn IDs", async () => {
+  const f = engineFixture();
+  try {
+    f.e.started("old-turn");
+    f.client.call = async (method: string, params: any) => {
+      f.rpc.push({ method, params });
+      if (method === "turn/steer")
+        throw new RpcError({ code: -32600, message: "expected active turn id old-turn but found `new-turn`" });
+      return { id: "queued" };
+    };
+    expect(await f.e.receiveBatch([update()])).toBe("accepted");
+    expect(await f.e.receiveBatch([update()])).toBe("accepted");
+    expect(f.rpc.map(r => r.method)).toEqual(["turn/steer", "thread/queue/add"]);
+    expect(f.rpc[1].params.clientUserMessageId).toBe(f.rpc[0].params.clientUserMessageId);
+    expect(f.rpc[1].params.input).toEqual(f.rpc[0].params.input);
+    expect(f.calls).toHaveLength(0);
+  } finally { f.done(); }
+});
+test("unknown queue acceptance after stale turn rejection is never replayed", async () => {
+  const f = engineFixture();
+  try {
+    f.e.started("old-turn");
+    f.client.call = async (method: string) => {
+      f.rpc.push(method);
+      if (method === "turn/steer")
+        throw new RpcError({ code: -32600, message: "expected active turn id old-turn but found `new-turn`" });
+      throw new DeliveryUnknown("timeout");
+    };
+    expect(await f.e.receiveBatch([update()])).toBe("unknown");
+    await f.e.receiveBatch([update()]);
+    expect(f.rpc).toEqual(["turn/steer", "thread/queue/add"]);
+  } finally { f.done(); }
+});
+test("other RPC rejections stay rejected and keep diagnostics private", async () => {
+  const f = engineFixture();
+  try {
+    f.e.started("old-turn");
+    f.client.call = async (method: string) => {
+      f.rpc.push(method);
+      throw new RpcError({ code: -32603, message: "expected active turn id private-turn but found `other-turn`" });
+    };
+    expect(await f.e.receiveBatch([update()])).toBe("rejected");
+    expect(f.rpc).toEqual(["turn/steer"]);
+    expect(JSON.stringify(f.calls)).not.toContain("private-turn");
+    expect(f.e.journal.status("in", "1").status).toBe("rejected");
+  } finally { f.done(); }
+});
+
 test("only explicit no-active rejection allows steer fallback", async () => {
   const f = engineFixture();
   try {

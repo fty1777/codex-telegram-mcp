@@ -1,6 +1,6 @@
 # Runtime internals
 
-[Development](development.md) · [README](../README.md)
+[Architecture](architecture.md) · [Development](development.md) · [README](../README.md)
 
 ## Status fields
 
@@ -46,6 +46,20 @@ Telegram polling already works. Health includes the current pipeline operation,
 its start time and the last progress time. Stalled operations cancel their
 transports before the MCP owner retries. Output backlog is drained in bounded
 time slices so it cannot indefinitely postpone accepted incoming messages.
+
+## Verified updates
+
+`plugin_status` reports the actual MCP process version and PID. `list_bots`
+reports `runtime_version` from the verified receiver health record. Neither the
+cached package version nor an accepted configuration refresh proves activation.
+The foreground updater keeps loaded sessions subscribed across installation,
+reconciles and refreshes MCP, then compares the installed version to the running
+version. Active receivers must match that process and version and have completed
+Codex attachment and Telegram polling. Unloaded sessions are not resumed.
+The update skill runs this path from the installed package without replacing the
+conversation or creating a detached receiver. Real Telegram delivery remains a
+separate check. Failed activation does not automatically roll back files or reopen
+the session; it returns an unconfirmed state for inspection.
 
 ## Ownership and pairing
 
@@ -341,3 +355,23 @@ independent receivers can be stopped for migration, never relaunched. Plugin
 connection drains a retired receiver before attaching MCP, preserving pairing,
 message cursors and delivery receipts. A worker-only ownership record is never
 signalled as an independent process because it may belong to the Codex host.
+
+## Plugin identity handoff
+
+Before changing an existing installation identity, query the bound thread's
+`mcpServerStatus/list`, require the target `pluginId`, and call `list_bots` through
+that thread's MCP. This management-plane probe does not call `connect` or poll
+Telegram. The native binding tool and rescue CLI perform it before a cross-plugin
+binding change. Configuration reload success is not a substitute.
+
+A verified target permits the old worker to pause by lease and release the bot
+lock. Never signal the Codex-owned host to stop one worker. Record attachment
+separately from fresh health belonging to the new plugin and bound thread.
+`list_bots.handoff` exposes only phase, status and timestamp; raw diagnostics and
+old/new installation identities remain in the private journal. The old receipt
+is retained for auditing, not silently deleted or treated as the active binding.
+
+Blocked preflight leaves configuration unchanged. If receiving is already down,
+a stable request ID reserves one actionable system notice through the ordinary
+sender. A confirmed or ambiguous notice is not resent on repeated failures.
+Direct CLI delivery never changes receiver health to connected.

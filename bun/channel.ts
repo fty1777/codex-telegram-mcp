@@ -2,14 +2,15 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { join } from "node:path";
 import { rmSync } from "node:fs";
-import { Store, atomic, readJSON } from "./state";
+import { Store, atomic, readJSON, now, privateDir } from "./state";
 import { managementServer } from "./manager";
 import { McpWorkerOwner, controlMcp } from "./lifecycle";
 import { callingSession } from "./management";
 import { runWorker, pluginEnabled } from "./worker";
 import { diagnostic } from "./engine";
 import { Sender } from "./telegram";
-import { lock, live, stop } from "./process";
+import { lock, live, stop, waitForReceiverLock, status } from "./process";
+import { assertHandoffTarget, receiptPlugin, previousPlugin, probeHandoff, notifyHandoffFailure, recordHandoff, HandoffBlocked, completeHandoff } from "./handoff";
 
 /** One Codex-owned MCP host per session, with independently owned bot workers. */
 export class ChannelHost {
@@ -42,6 +43,7 @@ export class ChannelHost {
     if (!owner) {
       owner = new McpWorkerOwner(c.thread_id, async (signal) => {
         const thread = this.store.read(name).thread_id;
+        const installation = this.store.read(name).plugin?.id;
         for (let attempt = 0; !signal.aborted; attempt++) {
           try {
             await this.run(this.store, name, signal);
@@ -58,7 +60,8 @@ export class ChannelHost {
               !current.enabled ||
               !current.autostart ||
               current.binding_change ||
-              current.thread_id !== thread
+              current.thread_id !== thread ||
+              current.plugin?.id !== installation
             )
               return;
             const detail = diagnostic(String(error), this.store.token(name));
@@ -77,7 +80,8 @@ export class ChannelHost {
     }
     await owner.rebind(c.thread_id);
     this.authorized(name, meta);
-    return owner.connect(meta);
+    const connected = owner.connect(meta);
+    return await completeHandoff(this.store, name) ?? connected;
   }
   async disconnect(name: string, meta: unknown) {
     this.authorized(name, meta);
@@ -118,12 +122,76 @@ export class ChannelHost {
 
 export type SharedPlugin = { id: string; root: string };
 
-/** Drain retired receivers before attaching the only supported lifecycle. */
-export async function prepareSharedPlugin(store: Store, name: string, plugin?: SharedPlugin, activate = true) {
+const handoffVerified = Symbol("handoffVerified");
+
+/** Verify the target management plane before draining the old poller. */
+export async function prepareSharedPlugin(
+  store: Store, name: string, plugin?: SharedPlugin, activate = true,
+  services = { probe: probeHandoff, notify: notifyHandoffFailure },
+) {
   const current = store.read(name);
-  if (current.lifecycle !== "mcp" || live(join(store.instance(name), "process.json")))
-    await stop(store, name);
-  return attachSharedPlugin(store, name, plugin, activate);
+  const target = plugin ?? (() => {
+    const receipt = readJSON(join(store.root, "manager-installation.json"));
+    return { id: receipt.plugin_id, root: receipt.installed_path };
+  })();
+  const old = previousPlugin(store, name);
+  const receipt = receiptPlugin(store, name);
+  const runtime = status(store, name);
+  // A stale receipt alone proves nothing. Combine it with a stopped receiver
+  // and a read-only target check to recognize a previously interrupted switch.
+  const interrupted = old === target.id && receipt && receipt !== old &&
+    current.enabled && current.autostart !== false &&
+    (!runtime.worker || runtime.health?.status === "stopped");
+  const migrating = interrupted || (old && old !== target.id) || live(join(store.instance(name), "process.json"));
+  if (!migrating) return attachSharedPlugin(store, name, plugin, activate);
+  const release = lock(join(store.instance(name), "handoff.lock"));
+  let releaseBot: (() => void) | undefined;
+  const state = { from: (interrupted ? receipt : old) ?? null, to: target.id, thread: current.thread_id,
+    revision: current.binding_revision ?? null, server: "telegram",
+    was_running: current.enabled && current.autostart !== false };
+  try {
+    const readiness = await services.probe(current, target);
+    if (readiness.status !== "ready") {
+      const blocked = { ...state, phase: "blocked", status: readiness.status,
+        diagnostic: diagnostic(readiness.diagnostic ?? "", store.token(name)) };
+      recordHandoff(store, name, blocked);
+      await services.notify(store, name, blocked);
+      throw new HandoffBlocked(readiness.status);
+    }
+    const guard = lock(join(store.instance(name), "management.lock"));
+    try {
+      const latest = store.read(name);
+      if (latest.thread_id !== current.thread_id || latest.binding_revision !== current.binding_revision ||
+          latest.plugin?.id !== current.plugin?.id || latest.removing || latest.binding_change)
+        throw Error("Bot binding changed during handoff preflight; no receiver was stopped");
+      // Pause by lease instead of signalling a Codex-owned MCP process. The old
+      // owner releases the bot lock before the replacement can start polling.
+      if (latest.lifecycle === "mcp") atomic(join(store.instance(name), "config.json"), { ...latest, autostart: false });
+    } finally { guard(); }
+    if (current.lifecycle !== "mcp" || live(join(store.instance(name), "process.json"))) await stop(store, name);
+    privateDir(join(store.root, "locks"));
+    releaseBot = await waitForReceiverLock(join(store.root, "locks", `bot-${current.bot_id}.lock`), new AbortController().signal, 15000);
+    if (!releaseBot) throw Error("Receiver handoff cancelled");
+    const beforeAttach = store.read(name);
+    if (beforeAttach.thread_id !== current.thread_id || beforeAttach.binding_revision !== current.binding_revision ||
+        beforeAttach.plugin?.id !== current.plugin?.id || beforeAttach.enabled !== current.enabled)
+      throw Error("Bot binding changed while waiting for the old receiver; handoff was not applied");
+    let config = attachSharedPlugin(store, name, plugin, activate, handoffVerified);
+    if (!activate && config.autostart !== current.autostart) {
+      config = { ...config, autostart: current.autostart };
+      atomic(join(store.instance(name), "config.json"), config);
+    }
+    recordHandoff(store, name, { ...state, phase: "attached", status: "receiver-not-ready", attached_at: now() });
+    return config;
+  } catch (error) {
+    if (!(error instanceof HandoffBlocked)) {
+      const failed = { ...state, phase: "failed", status: "handoff-failed",
+        diagnostic: diagnostic(String(error), store.token(name)) };
+      recordHandoff(store, name, failed);
+      await services.notify(store, name, failed);
+    }
+    throw error;
+  } finally { releaseBot?.(); release(); }
 }
 
 export function attachSharedPlugin(
@@ -131,6 +199,7 @@ export function attachSharedPlugin(
   name: string,
   plugin?: SharedPlugin,
   activate = true,
+  proof?: typeof handoffVerified,
 ) {
   const installed = plugin
     ? { phase: "installed", plugin_id: plugin.id, installed_path: plugin.root, mcp_server: "telegram" }
@@ -140,6 +209,9 @@ export function attachSharedPlugin(
   const release = lock(join(store.instance(name), "management.lock"));
   try {
     const current = store.read(name);
+    const old = previousPlugin(store, name);
+    if (old && old !== installed.plugin_id && proof !== handoffVerified)
+      throw new HandoffBlocked("handoff-preflight-required");
     if (live(join(store.instance(name), "process.json")) ||
         (current.lifecycle !== "mcp" && live(join(store.instance(name), "worker-process.json"))))
       throw Error("Retired receiver is still active; migrate through the Telegram plugin before attaching.");
@@ -163,6 +235,12 @@ export function attachSharedPlugin(
 export function channelServer(store: Store, providedHost?: ChannelHost, plugin?: SharedPlugin) {
   const host = providedHost ?? new ChannelHost(store, runWorker, plugin);
   const server = managementServer(store, {
+    attach: async (_s, name) => {
+      if (plugin) await prepareSharedPlugin(store, name, plugin, false);
+    },
+    preflightBind: async (_s, name, session) => {
+      if (plugin) await assertHandoffTarget(store, name, plugin, session);
+    },
     install: async (_s, name) => {
       const config = await prepareSharedPlugin(store, name, plugin);
       return host.connect(name, { threadId: config.thread_id });
@@ -319,17 +397,14 @@ export async function channel(store: Store, plugin?: SharedPlugin) {
     for (const c of store
       .list()
       .filter((c) => c.shared_mcp && c.thread_id && c.enabled && c.autostart && (!plugin || c.plugin?.id === plugin.id))) {
-      // Marketplace updates move the installed files; retain pairing and session
-      // ownership while updating only this plugin's cached location.
-      try {
-        if (plugin) attachSharedPlugin(store, c.name, plugin, false);
-      } catch (error) {
-        console.error("Connection pending:", diagnostic(String(error)));
-        continue;
-      }
-      void controlMcp(c, "connect").catch((e) =>
-        console.error("Connection pending:", String(e)),
-      );
+      // Management may initialize globally while the bound thread still cannot
+      // dispatch this MCP. Probe interrupted handoffs before resuming them.
+      void (async () => {
+        if (plugin) await prepareSharedPlugin(store, c.name, plugin, false);
+        const connected = await controlMcp(store.read(c.name), "connect");
+        if (["mcp-unavailable", "mcp-startup-failed", "awaiting-session"].includes(connected?.status))
+          await completeHandoff(store, c.name, 0);
+      })().catch((error) => console.error("Connection pending:", diagnostic(String(error), store.token(c.name))));
     }
   };
   await server.connect(new StdioServerTransport());

@@ -14,7 +14,7 @@ export function listBots(store: Store) {
     const receiver = runtime.worker ?? runtime.process;
     const receiverHealth = receiver && runtime.health?.pid === receiver.pid
       ? runtime.health : null;
-    const receiverStatus = receiverHealth?.pipeline?.status === "stalled"
+    let receiverStatus = receiverHealth?.pipeline?.status === "stalled"
       ? "stalled"
       : receiverHealth?.status === "disconnected"
         ? "reconnecting"
@@ -24,7 +24,7 @@ export function listBots(store: Store) {
     let pairingConnectivity = "not_tested";
     let pending = 0,
       held = 0;
-    let lastInbound: any, lastOutbound: any, lastExit: any;
+    let lastInbound: any, lastOutbound: any, lastExit: any, handoff: any;
     const path = join(store.instance(config.name), "delivery.sqlite3");
     if (existsSync(path)) {
       const db = new Database(path, { readonly: true });
@@ -50,6 +50,7 @@ export function listBots(store: Store) {
             )
             .get();
         lastExit = meta("worker_exit");
+        handoff = meta("plugin_handoff");
         const probe: any = db
           .query(
             "SELECT status, updated FROM delivery WHERE direction='out' AND key='pairing-success'",
@@ -85,6 +86,9 @@ export function listBots(store: Store) {
         db.close();
       }
     }
+    if (receiver && handoff && ["attached", "activation_pending"].includes(handoff.phase) &&
+        (receiverHealth?.plugin_id !== config.plugin?.id || receiverHealth?.updated < handoff.attached_at))
+      receiverStatus = "handoff-pending";
     return {
       instance: config.name,
       username: config.username,
@@ -93,6 +97,8 @@ export function listBots(store: Store) {
       running: Boolean(runtime.process),
       pairing_connectivity: pairingConnectivity,
       receiver_status: receiverStatus,
+      runtime_version: receiverHealth?.version ?? null,
+      handoff: handoff ? { phase: handoff.phase, status: handoff.status, updated: handoff.updated } : null,
       telegram_status: receiverHealth?.telegram?.status ?? "stopped",
       pipeline: receiverHealth?.pipeline ? {
         status: receiverHealth.pipeline.status,

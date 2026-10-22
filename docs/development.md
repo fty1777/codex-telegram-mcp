@@ -34,6 +34,7 @@ bun run build:plugin
 bun run typecheck
 bun test tests-bun
 bun scripts/probe-marketplace.ts
+bun scripts/probe-marketplace.ts --upgrade
 ```
 
 The build copies license notices and gathers licenses for bundled dependencies.
@@ -55,8 +56,8 @@ Pairing, receiver readiness
 and real round-trip delivery still need separate checks.
 
 For source-checkout development, the existing `bun run bridge install` installer
-remains available. Remove that installation before migrating to the marketplace
-plugin, as described in [setup](setup.md#an-existing-telegram-integration).
+remains available. Verify the target plugin before handing over the connection,
+as described in [setup](setup.md#an-existing-telegram-integration).
 
 ## Code map
 
@@ -179,3 +180,37 @@ some may run a model turn. Telegram is stubbed; they send no Telegram messages.
 - `scripts/probe-first-load.ts` — first installation and reload of a disposable session.
 - `scripts/probe-channel.ts`, `scripts/probe-channel-migration.ts` — shared plugin behavior.
 - `scripts/probe-mcp-lifecycle.ts`, `scripts/probe-mcp-plugin.ts` — legacy lifecycle behavior.
+
+## Existing-session update probe
+
+`probe-marketplace.ts --upgrade` uses an isolated Git marketplace with a local
+URL rewrite, two package versions, and a real Codex App Server. It runs the
+bundled CLI updater over the real Unix transport, queries the running version
+before and after, and verifies that the MCP process changes while the same thread remains open. It uses no
+model turns or Telegram requests and does not touch the active installation.
+The disposable conversation contains injected fixture history, so subscription
+retention is tested against a persisted, resumable thread.
+
+`bun/update.ts` keeps already-loaded threads subscribed during installation and
+MCP refresh. It never loads an inactive conversation. Success requires the
+installed version to match `plugin_status`; configured active receivers must
+also report that version, the current MCP PID, completed Codex attachment and
+working Telegram polling. Paused bots stay paused. Unconfirmed activation is
+reported separately, with no automatic session archive, reopen or independent
+receiver. Only the explicit concurrent marketplace auto-refresh conflict is
+retried; install calls and ambiguous message deliveries are never replayed.
+
+### Activation protocol
+
+The foreground CLI uses `plugin/reconcile` followed by
+`config/mcpServer/reload` with `params: null`. These are App Server RPCs, not
+shell commands or TUI slash commands. Codex CLI 0.163.0 exposes no
+`codex mcp reload`; `/mcp` is a status query. An accepted refresh is followed by
+`mcpServer/tool/call` for `plugin_status` in each held thread. Matching versions
+and current receiver health are required before reporting success.
+
+The installed CLI is `bun <installedPath>/bridge.js update`; `installedPath` is
+returned by `codex plugin add codex-telegram-mcp@fty1777 --json`. Developers with
+a checkout may use `bun run bridge update`. The latter is not a prerequisite for
+marketplace users. The updater starts with v0.7.7 and cannot be invoked from an
+older bundle that does not contain it.

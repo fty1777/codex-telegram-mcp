@@ -24,6 +24,8 @@ import {
 } from "./pairing";
 import { readFileSync } from "node:fs";
 import { hooks } from "./diagnostics";
+import { updatePlugin } from "./update";
+import { HandoffBlocked, assertHandoffTarget } from "./handoff";
 export async function main(argv = process.argv.slice(2)) {
   const { values: v, positionals: p } = parseArgs({
     args: argv,
@@ -53,6 +55,9 @@ export async function main(argv = process.argv.slice(2)) {
     s = new Store(v["data-dir"]);
   let result: any;
   switch (command) {
+    case "update":
+      result = await updatePlugin(s, { session: v.session ?? process.env.CODEX_THREAD_ID, endpoint: v.endpoint });
+      break;
     case "plugin": {
       if (!v["plugin-root"]) throw Error("--plugin-root is required");
       await channel(s, marketplacePlugin(v["plugin-root"]));
@@ -162,6 +167,7 @@ export async function main(argv = process.argv.slice(2)) {
         throw Error(
           "Use --session SESSION_ID for rescue binding; agents should use bind_bot",
         );
+      if (v["plugin-root"]) await assertHandoffTarget(s, name, marketplacePlugin(v["plugin-root"]), target);
       result = await changeBinding(
         s,
         name,
@@ -231,13 +237,14 @@ export async function main(argv = process.argv.slice(2)) {
     }
     default:
       throw Error(
-        "Commands: install-manager, uninstall-manager, pair-begin, pair-check, pair-status, pair-watch, pair-confirm, pair-cancel, bind, unbind, install, configure, start, stop, pause, resume, status, doctor, list, send, delivery-status, uninstall, rollback",
+        "Commands: update, install-manager, uninstall-manager, pair-begin, pair-check, pair-status, pair-watch, pair-confirm, pair-cancel, bind, unbind, install, configure, start, stop, pause, resume, status, doctor, list, send, delivery-status, uninstall, rollback",
       );
   }
   console.log(JSON.stringify(result));
 }
 if (import.meta.main)
   main().catch((e) => {
-    console.error(diagnostic(e instanceof Error ? e.message : e));
+    if (e instanceof HandoffBlocked) console.log(JSON.stringify(e.result));
+    else console.error(diagnostic(e instanceof Error ? e.message : e));
     process.exitCode = 1;
   });

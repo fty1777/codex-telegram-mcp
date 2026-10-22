@@ -1,3 +1,4 @@
+import metadata from "../package.json";
 import {
   existsSync,
   readFileSync,
@@ -167,6 +168,7 @@ export async function runWorker(
         !current.enabled ||
         current.autostart === false ||
         current.thread_id !== config.thread_id ||
+        current.plugin?.id !== config.plugin?.id ||
         current.binding_revision !== config.binding_revision ||
         current.binding_change ||
         !pluginEnabled(current)
@@ -174,10 +176,13 @@ export async function runWorker(
         shutdown(
           !current.enabled
             ? "instance_disabled"
+            : current.plugin?.id !== config.plugin?.id
+              ? "plugin_binding_changed"
             : current.autostart === false
               ? "instance_paused"
               : current.binding_change ||
                   current.thread_id !== config.thread_id ||
+        current.plugin?.id !== config.plugin?.id ||
                   current.binding_revision !== config.binding_revision
                 ? "binding_changed"
                 : "plugin_disabled_or_removed",
@@ -194,6 +199,8 @@ export async function runWorker(
         started,
         updated: now(),
         runtime: "bun",
+        version: metadata.version,
+        plugin_id: config.plugin?.id ?? null,
         status: progress.snapshot().status === "stalled" ? "stalled" : engine?.status ?? "connecting",
         pipeline: progress.snapshot(),
         thread_id: config.thread_id,

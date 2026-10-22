@@ -27,16 +27,67 @@ one terminal may leave the connection running.
 
 ## Updates
 
-For a marketplace installation, run:
+The updater and `update-telegram` skill are new in v0.7.7. They are not included
+in v0.7.6 or earlier. Installing files and activating them in an open conversation
+are separate steps.
+
+### Ask Codex to update
+
+In the conversation using Telegram, say:
+
+> Update the Telegram plugin and verify that the new version is running.
+
+With v0.7.7 or later, Codex can use the bundled `update-telegram` skill. It runs
+the installed updater, refreshes MCP in the existing conversation, and checks the
+running version and receiver readiness. No repository checkout is needed.
+
+### Update manually from a terminal
+
+Refresh the marketplace and install the package, requesting its installed path:
 
 ```sh
 codex plugin marketplace upgrade fty1777
-codex plugin add codex-telegram-mcp@fty1777
+codex plugin add codex-telegram-mcp@fty1777 --json
 ```
 
-Existing bots and pairing are retained. A brief reconnection can occur during an
-update. Keep `bun` on your PATH. If new tools do not appear, finish the current
-task, then reload the conversation.
+These commands alone do not confirm that an open conversation is running the new
+version. Find `installedPath` in the second command's JSON output. If the package
+is v0.7.7 or later, run its updater, replacing `<installedPath>` with that value:
+
+```sh
+bun "<installedPath>/bridge.js" update
+```
+
+Run this while the intended Codex conversation is open. The updater performs the
+marketplace/install checks again, keeps loaded bot conversations subscribed
+while MCP is replaced, and verifies activation. It does not start a model turn.
+Paused bots stay paused; conversations that are not loaded are left unopened.
+
+If the installed package is still v0.7.6 or earlier, it has no `update` command.
+Return to Codex and ask it to refresh the Telegram MCP connection and verify the
+running version and receiving. Older versions also lack `plugin_status`, so file
+installation alone must not be reported as verified activation.
+
+Codex CLI 0.163.0 has no `codex mcp reload` command, and `/mcp` displays status
+rather than refreshing it. The updater uses the App Server API internally; there
+is no additional native refresh command to paste into Codex.
+
+### Check the result
+
+| Updater result | Meaning |
+| --- | --- |
+| `updated` | The installed version is running in the checked sessions; active bot receivers are ready. |
+| `up_to_date` | The desired version was already running and readiness was checked. |
+| `installed` | Files are installed, but no loaded session was available to verify. |
+| `awaiting_session` | Some configured conversations are not loaded; their activation is not verified. |
+| `activation_pending` | Files are installed, but runtime version or receiver readiness remains unconfirmed. |
+
+For an unconfirmed result, ask Codex to inspect `plugin_status` and `list_bots`.
+Do not repeatedly reinstall or automatically reopen the active conversation.
+Pairing, queued messages and delivery receipts are retained. Updates can cause a
+brief reconnection. Receiver readiness is separate from a verified Telegram
+message exchange; finish by sending a short message and checking the reply.
+Keep `bun` on your PATH.
 
 ## Remove a bot or the plugin
 

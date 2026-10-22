@@ -65,7 +65,7 @@ export async function controlMcp(
   refreshLoaded = false,
 ) {
   if (!config.mcp_server) throw Error("Missing installed MCP server name");
-  const client = await AppServer.connect(config.endpoint);
+  const client = await AppServer.connect(config.endpoint, tool === "connect" ? 45000 : 15000);
   try {
     const { thread } = await client.call("thread/read", {
       threadId: config.thread_id,
