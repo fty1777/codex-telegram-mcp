@@ -468,3 +468,66 @@ test("blocked historical HTTP does not block polling, owner delivery, or another
     f.close();
   }
 }, 15000);
+
+test("poll backoff grows, stays bounded, and includes jitter", async () => {
+  const { pollRetryDelay } = await import("../bun/worker");
+  expect(pollRetryDelay(1, true, 0)).toBe(5000);
+  expect(pollRetryDelay(2, true, 0)).toBe(10000);
+  expect(pollRetryDelay(1, false, 0)).toBe(2000);
+  expect(pollRetryDelay(100, true, 1)).toBe(72000);
+});
+
+test("409 retries recover, reset failure count, and never stop the receiver or spam notices", async () => {
+  const f = fixture();
+  f.turns.splice(0);
+  atomic(join(f.store.instance("test"), "config.json"), { ...f.store.read("test"), lifecycle: "mcp" });
+  const oldConnect = AppServer.connect, oldCall = Telegram.prototype.call;
+  const abort = new AbortController();
+  let polls = 0, notices = 0, allowSecondConflict = false;
+  const deadlines: number[] = [];
+  AppServer.connect = async () => ({
+    events: [], send() {}, close() {},
+    resume: async () => ({ thread: { status: { type: "idle" }, turns: [] } }),
+    call: async (method: string) => method === "thread/goal/get" ? { goal: null } :
+      method === "thread/turns/list" ? { data: [] } : { thread: { status: { type: "idle" }, turns: [] } },
+  }) as any;
+  Telegram.prototype.call = async function(method: string, _params: any, timeout?: number) {
+    if (method === "getUpdates") {
+      deadlines.push(timeout!);
+      polls++;
+      if (polls === 1 || allowSecondConflict) {
+        allowSecondConflict = false;
+        throw new TelegramError(409, "Conflict: terminated by other getUpdates request");
+      }
+      await Bun.sleep(30);
+      return [];
+    }
+    if (method === "sendRichMessage" || method === "sendMessage") {
+      notices++;
+      throw Error("Simulated failed notice delivery");
+    }
+    return true;
+  };
+  const worker = runWorker(f.store, "test", abort.signal);
+  try {
+    await until(() => polls >= 2, 8000);
+    await until(() => f.sender.journal.get("telegram_poll_recovered")?.failures === 1);
+    expect(deadlines.every(x => x === 20000)).toBe(true);
+    expect(notices).toBe(1);
+    allowSecondConflict = true;
+    await until(() => f.sender.journal.get("telegram_poll_failures", []).length === 2);
+    const errors = f.sender.journal.get("telegram_poll_failures");
+    expect(errors.map((x: any) => x.failures)).toEqual([1, 1]);
+    expect(errors.every((x: any) => x.code === 409)).toBe(true);
+    expect(notices).toBe(1);
+    abort.abort();
+    await worker;
+    expect(f.sender.journal.get("worker_exit").reason).toBe("session_host_aborted");
+  } finally {
+    abort.abort();
+    await worker;
+    AppServer.connect = oldConnect;
+    Telegram.prototype.call = oldCall;
+    f.close();
+  }
+}, 12000);

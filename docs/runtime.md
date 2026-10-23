@@ -375,3 +375,20 @@ Blocked preflight leaves configuration unchanged. If receiving is already down,
 a stable request ID reserves one actionable system notice through the ordinary
 sender. A confirmed or ambiguous notice is not resent on repeated failures.
 Direct CLI delivery never changes receiver health to connected.
+
+## Polling conflicts and recovery
+
+Receiving uses one sequential `getUpdates` loop per bot, protected by its local
+bot lock. The server wait is 5 seconds and the local request deadline is 20
+seconds. Transport failures back off from 2 seconds; 409 conflicts back off from
+5 seconds. Exponential delays cap at 60 seconds plus up to 20% random jitter.
+A successful poll resets the failure count. Pause, binding changes and host
+shutdown still cancel both polling and retry waits.
+
+A 409 does not retire the receiver or change pairing, bindings or update cursors.
+The worker sends a calm conflict notice independently of its retry loop, with a
+stable receipt and a persistent 10-minute notice cooldown. Failed or uncertain
+notice delivery never prevents receiving from retrying. The most recent 20 poll
+failures retain their timestamps, elapsed attempt boundaries, retry delays and
+redacted errors locally; successful recovery records its time and failure count.
+A conflict alone does not establish which client caused overlapping requests.

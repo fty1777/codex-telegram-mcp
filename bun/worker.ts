@@ -22,6 +22,13 @@ import {
   sleep,
 } from "./process";
 
+/** Back off without retiring the receiver; jitter avoids synchronized retries. */
+export function pollRetryDelay(failures: number, conflict: boolean, jitter = Math.random()) {
+  const base = conflict ? 5000 : 2000;
+  return Math.round(Math.min(60000, base * 2 ** Math.min(6, Math.max(0, failures - 1))) *
+    (1 + Math.max(0, Math.min(1, jitter)) * 0.2));
+}
+
 export function pluginEnabled(config: any) {
   if (!config.plugin) return true;
   const p = config.plugin;
@@ -245,12 +252,16 @@ export async function runWorker(
     };
     bg.push(
       (async () => {
+        let failures = 0;
         while (!stopped) {
+          const pollStarted = now();
           try {
             const params: any = { timeout: 5, allowed_updates: ["message"] };
             const offset = journal.get("telegram_offset");
             if (offset !== null) params.offset = offset;
-            const rows = await api.call("getUpdates", params, 8000);
+            const rows = await api.call("getUpdates", params, 20000);
+            if (failures) journal.put("telegram_poll_recovered", { updated: now(), failures });
+            failures = 0;
             pollHealth = { status: "connected", updated: now() };
             if (rows.length) {
               const owner = config.owner_id;
@@ -268,20 +279,35 @@ export async function runWorker(
             }
           } catch (e) {
             if (stopped) break;
+            failures++;
+            const conflict = e instanceof TelegramError && e.code === 409;
+            const delay = pollRetryDelay(failures, conflict);
             pollHealth = {
               status: "retrying",
               updated: now(),
+              started: pollStarted,
+              failures,
+              retry_after_ms: delay,
+              code: e instanceof TelegramError ? e.code : null,
               error: diagnostic(String(e), store.token(name)),
             };
-            if (e instanceof TelegramError && e.code === 409) {
-              await sender.send("poll-conflict-" + started, {
+            // Retain a bounded failure timeline; health alone overwrites the
+            // transport error which preceded a conflict.
+            journal.put("telegram_poll_failures", [
+              ...journal.get("telegram_poll_failures", []), pollHealth,
+            ].slice(-20));
+            if (conflict && now() >= journal.get("poll_conflict_notice_after", 0)) {
+              journal.put("poll_conflict_notice_after", now() + 600);
+              // Notice delivery must never block the polling recovery loop.
+              // A stable receipt also prevents replay after unknown delivery.
+              bg.push(sender.send("poll-conflict-" + started, {
                 source: "system",
-                text: "Telegram receiving has stopped because this bot is being used by another connection. Ask Codex to check the connection before restarting it.",
-              });
-              shutdown("telegram_poll_conflict");
-              break;
+                text: "Telegram reported a receiving conflict. Receiving will retry automatically with a delay. If this keeps happening, check whether another instance is receiving messages for this bot.",
+              }).catch(error => {
+                journal.put("poll_conflict_notice_error", diagnostic(String(error), store.token(name)));
+              }));
             }
-            await wait(2000);
+            await wait(delay);
           }
         }
       })(),
